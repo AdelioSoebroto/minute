@@ -10,7 +10,6 @@
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.2</string>
-<key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Minute records your voice in meetings so it can write the minutes. Audio stays on this Mac.</string>
 <key>NSAudioCaptureUsageDescription</key><string>Minute records the meeting audio playing on this Mac so it can write the minutes. Audio stays on this Mac.</string>
 </dict></plist>

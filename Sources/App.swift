@@ -729,6 +729,16 @@ struct StepExport: View {
 /// Opening the app again (Spotlight, Finder, `open`) shows the Meetings window, since a menu bar app has no Dock icon to click.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var showLibrary: (() -> Void)?
+    static var isBusy: (() -> Bool)?
+    /// Never lose a meeting to an accidental ⌘Q or Dock > Quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard AppDelegate.isBusy?() == true else { return .terminateNow }
+        let a = NSAlert()
+        a.messageText = "Minute is recording or writing minutes"
+        a.informativeText = "Quitting now would interrupt it. Your audio is saved as it is recorded, but the minutes would not be written."
+        a.addButton(withTitle: "Keep Going"); a.addButton(withTitle: "Quit Anyway")
+        return a.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { AppDelegate.showLibrary?() }
         return true
@@ -756,6 +766,8 @@ struct MinuteApp: App {
             }
             .onAppear {
                 AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
+                AppDelegate.isBusy = { r.isRecording || r.isBusy }
+                if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == nil { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }   // show the main window at launch
                 if let d = ProcessInfo.processInfo.environment["MINUTE_DEMO"] {
                     if d == "draft", let dir = ProcessInfo.processInfo.environment["MINUTE_DIR"] { r.draft(URL(fileURLWithPath: dir)) } else { r.demo(d) }
                     openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)
@@ -764,11 +776,11 @@ struct MinuteApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Meetings", id: "library") { LibraryView(lib: lib, r: r) }
+        Window("Minute", id: "library") { LibraryView(lib: lib, r: r) }
             .windowToolbarStyle(.unified)
             .defaultSize(width: 1040, height: 700)
 
-        Window("Minute", id: "minute") { MainWindow(r: r) }
+        Window("New Minutes", id: "minute") { MainWindow(r: r) }
             .windowResizability(.contentMinSize)
             .windowToolbarStyle(.unified)
             .defaultSize(width: 860, height: 760)

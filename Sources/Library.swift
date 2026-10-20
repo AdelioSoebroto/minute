@@ -257,6 +257,53 @@ final class Library: ObservableObject {
     }
 }
 
+/// Record controls inside the main window, so recording does not depend on the menu bar.
+struct RecordCard: View {
+    @ObservedObject var r: Recorder
+    @Environment(\.openWindow) private var openWindow
+    func showFlow() { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            switch r.phase {
+            case .idle:
+                Picker("Mode", selection: $r.mode) { ForEach(Mode.allCases) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden()
+                HoldButton(title: "Hold to record · \(r.mode.hint.lowercased())", symbol: "mic.fill", tint: .red, seconds: 0.8) { r.start() }
+            case .recording:
+                HStack(spacing: 6) { Circle().fill(.red).frame(width: 7, height: 7); Text("Recording · \(r.mode.rawValue)").font(.callout.weight(.semibold)) }
+                Text(clock(r.elapsed)).font(.system(size: 36, weight: .light, design: .rounded)).monospacedDigit()
+                Waveform(samples: r.history)
+                if let w = r.warning {
+                    Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5) { r.stop(); showFlow() }
+            default:
+                if r.isBusy { ProgressView() } else { Image(systemName: r.phase == .done ? "checkmark.circle.fill" : "doc.text").font(.title2).foregroundStyle(r.phase == .done ? .green : .secondary) }
+                Text(statusText).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button("Open") { showFlow() }.glassButton(prominent: true)
+                if case .failed = r.phase { Button("Dismiss") { r.reset() }.buttonStyle(.borderless) }
+                if r.phase == .done { Button("New recording") { r.reset() }.buttonStyle(.borderless) }
+            }
+        }
+        .padding(14).frame(maxWidth: .infinity)
+        .glass(RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 4)
+        .animation(.spring(duration: 0.4), value: r.phase)
+    }
+
+    var statusText: String {
+        switch r.phase {
+        case .processing(let s): return s
+        case .review: return "Your minutes are ready to review"
+        case .exporting(let s): return s
+        case .done: return "Word and PDF are ready"
+        case .failed(let m): return m
+        default: return ""
+        }
+    }
+}
+
 struct LibraryView: View {
     @ObservedObject var lib: Library
     @ObservedObject var r: Recorder
@@ -294,6 +341,8 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationSplitView {
+            VStack(spacing: 0) {
+            RecordCard(r: r)
             List(selection: $selection) {
                 ForEach(groups, id: \.0) { name, items in
                     Section(name) { ForEach(items) { m in row(m).tag(m.id) } }
@@ -307,13 +356,18 @@ struct LibraryView: View {
                     ContentUnavailableView.search(text: query)
                 }
             }
-            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+            }
+            .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
             if let m = lib.meetings.first(where: { $0.id == selection }) { detail(m) }
             else { ContentUnavailableView("Select a meeting", systemImage: "doc.text.magnifyingglass", description: Text("Its minutes and transcript appear here.")) }
         }
         .frame(minWidth: 900, minHeight: 600)
-        .onAppear { lib.refresh(); if selection == nil { selection = lib.meetings.first?.id } }
+        .onAppear {
+            lib.refresh(); if selection == nil { selection = lib.meetings.first?.id }
+            AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
+            AppDelegate.isBusy = { r.isRecording || r.isBusy }
+        }
         .onChange(of: r.phase) { _, _ in lib.refresh() }
         .confirmationDialog("Move this meeting to the Bin?", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }), presenting: confirmDelete) { m in
             Button("Move to Bin", role: .destructive) { lib.trash(m); selection = nil }

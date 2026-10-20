@@ -4,6 +4,10 @@ A quiet menu-bar app for macOS that records a meeting, writes the minutes on-dev
 
 **Record → Review → Export.** Nothing leaves your Mac: audio capture, transcription (whisper.cpp) and drafting (a local LLM via Ollama) all run locally.
 
+## Using it
+
+Minute is a regular app (Dock icon, `~/Applications/Minute.app`). Its main window has a **Record** card at the top of the sidebar, then every past meeting; pick one to read its minutes or transcript, ask questions about it, edit and re-export, or open the Word/PDF. The menu bar icon is a shortcut for quick start/stop. Quitting while recording or writing minutes asks for confirmation.
+
 ## How it works
 
 1. **Record.** Hold the red button in the menu bar for a second to start. *Online* mode captures the meeting audio (Teams, Zoom, Meet, anything playing on the Mac) plus your mic as two separate tracks. *Onsite* mode captures the mic only. Holding (0.8 s to start, 1.5 s to stop) means you can't start or stop by accident; Quit is disabled while recording and the Mac stays awake.

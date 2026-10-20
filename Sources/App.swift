@@ -735,7 +735,8 @@ struct MinuteApp: App {
             }
             .onAppear {
                 if let d = ProcessInfo.processInfo.environment["MINUTE_DEMO"] {
-                    r.demo(d); openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)
+                    if d == "draft", let dir = ProcessInfo.processInfo.environment["MINUTE_DIR"] { r.draft(URL(fileURLWithPath: dir)) } else { r.demo(d) }
+                    openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)
                 }
             }
         }

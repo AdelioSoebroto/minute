@@ -66,13 +66,16 @@ def duration(p: Path):
 def cut_points(wav: Path, total: float):
     """Chunk boundaries (seconds) placed in silences so words are not split. Chunks are 30-70 s."""
     r = run(["ffmpeg", "-i", str(wav), "-af", "silencedetect=noise=-35dB:d=0.35", "-f", "null", "-"])
-    mids, start = [], None
+    mids, start, first = [], None, 0.0
     for line in r.stderr.splitlines():
         m = re.search(r"silence_start: ([\d.]+)", line)
         if m: start = float(m.group(1))
         m = re.search(r"silence_end: ([\d.]+)", line)
-        if m and start is not None: mids.append((start + float(m.group(1))) / 2); start = None
-    cuts, last = [0.0], 0.0
+        if m and start is not None:
+            end = float(m.group(1))
+            if not mids and start <= 0.05 and end > 1.0: first = max(0.0, end - 0.3)   # skip leading silence: it makes the transcriber hallucinate
+            mids.append(max(start, end - 0.3)); start = None
+    cuts, last = [first], first
     while total - last > 70:
         cand = [t for t in mids if last + 30 <= t <= last + 70]
         nxt = cand[0] if cand else last + 60
@@ -119,6 +122,19 @@ def whisper_prompt():
             "Transcribe exactly as spoken, keep slang and English words as said.")
     return (base + (f" Terms: {terms}." if terms else ""))[:700]
 
+def collapse_loops(t: str) -> str:
+    """Whisper sometimes loops ('in the chat box in the chat box ...'). Keep one copy of the repeated phrase and the rest of the text."""
+    w = t.split()
+    for n in (2, 3, 4, 5, 6):
+        i = 0
+        while i + 3 * n <= len(w):
+            if w[i:i + n] == w[i + n:i + 2 * n] == w[i + 2 * n:i + 3 * n]:
+                j = i + 3 * n
+                while w[j:j + n] == w[i:i + n]: j += n
+                return collapse_loops(" ".join(w[:i + n] + w[j:]))
+            i += 1
+    return t
+
 HALLU = re.compile(r"^(thanks? for watching|thank you\.?|terima kasih\.?|subtitles? by.*|\W*)$", re.I)
 
 def whisper(chunk: Path, lang: str):
@@ -143,7 +159,7 @@ def transcribe(label, wav, tmp, total_done, n_total):
         if j.get("result", {}).get("language") not in ("en", "id"):
             j = whisper(ch, "id")
         for s in j.get("transcription", []):
-            t = s["text"].strip()
+            t = collapse_loops(s["text"].strip())
             if not t or HALLU.match(t): continue
             segs.append((a + s["offsets"]["from"] / 1000, label, t))
     return segs
@@ -199,7 +215,7 @@ Return JSON with:
 - agenda: short meeting title, in the form "<Category> - <Subject>" using words actually said in the meeting, never copied from the examples.
 - telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. Telkomsel = internal staff; third party = vendors or other companies, and anyone said to be 'from' or 'dari' a company other than Telkomsel belongs under third party with that company. If unsure, put in telkomsel_names. Never guess names. Never list the labels Me, Others or Speaker as people.
 - telkomsel_unit / third_party_company: unit or company name if stated, else "".
-- topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
+- topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. One topic per subject: merge points about the same subject instead of repeating them. Keep common English business words as spoken (follow up, deploy, approval, change request); never translate them literally. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
 'Me' is the person who recorded ({me}); 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording. Never write Me, Others or Speaker in the output: use the person's real name, or 'peserta rapat' when unknown.
 Style examples of topics (Bahasa Indonesia):
 {examples}
@@ -237,6 +253,23 @@ def past_examples(current: Path, n=2):
         except Exception: pass
         if len(out) >= n * 3: break
     return "\n".join(f"- {t}" for t in out[:n * 3])
+
+HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+BULAN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+
+def fix_weekday_dates(text: str, day0):
+    """Language models get 'next Friday' wrong. Recompute any 'Jumat, 21 Oktober 2026' so the weekday and the date agree (next occurrence after the meeting)."""
+    import datetime
+    pat = re.compile(r"\b(" + "|".join(HARI) + r")(,?\s*\(?)(\d{1,2})\s+(" + "|".join(BULAN) + r")\s+(\d{4})", re.I)
+    def sub(m):
+        wd = [h.lower() for h in HARI].index(m.group(1).lower())
+        try: said = datetime.date(int(m.group(5)), [b.lower() for b in BULAN].index(m.group(4).lower()) + 1, int(m.group(3)))
+        except ValueError: said = None
+        if said and said >= day0 and said.weekday() == wd: return m.group(0)        # already consistent
+        k = next(k for k in range(1, 8) if (day0 + datetime.timedelta(days=k)).weekday() == wd)
+        d = day0 + datetime.timedelta(days=k)
+        return f"{m.group(1)}{m.group(2)}{d.day} {BULAN[d.month - 1]} {d.year}"
+    return pat.sub(sub, text)
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 def nice_date(y, m, d):
@@ -292,7 +325,11 @@ def make_mom(transcript: str, session: Path):
     meta = f"Recorded {n0[:10]} at {n0[11:13]}:{n0[13:15]}"
     try:
         import datetime
-        meta += " (" + datetime.date(int(n0[:4]), int(n0[5:7]), int(n0[8:10])).strftime("%A") + ")"
+        day0 = datetime.date(int(n0[:4]), int(n0[5:7]), int(n0[8:10]))
+        hari = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+        bulan = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+        cal = "; ".join(f"{hari[(day0 + datetime.timedelta(days=k)).weekday()]} {(day0 + datetime.timedelta(days=k)).day} {bulan[(day0 + datetime.timedelta(days=k)).month - 1]} {(day0 + datetime.timedelta(days=k)).year}" + (" (hari ini)" if k == 0 else " (besok)" if k == 1 else "") for k in range(0, 15))
+        meta += f" ({hari[day0.weekday()]}). Calendar, use it to turn weekday names and relative dates into exact dates, the next occurrence of a weekday is the first one listed: {cal}"
     except Exception: pass
     notes = ""
     try:
@@ -321,6 +358,17 @@ def make_mom(transcript: str, session: Path):
         return any(len(t) >= 3 and t.lower() in low for t in n.split())
     for k in ("telkomsel_names", "third_party_names"):
         data[k] = [x for x in data.get(k, []) if mentioned(x)]   # never list someone the transcript does not mention
+    try:
+        import datetime
+        day0 = datetime.date(int(session.name[:4]), int(session.name[5:7]), int(session.name[8:10]))
+        data["topics"] = [fix_weekday_dates(t, day0) for t in data.get("topics", [])]
+    except Exception as e:
+        log("date fix skipped: " + repr(e))
+    for k in ("telkomsel_names", "third_party_names"):
+        data[k] = [re.sub(r"\s*\(.*?\)", "", x).strip() for x in data.get(k, [])]
+    tel = [x.lower() for x in data.get("telkomsel_names", [])]
+    data["third_party_names"] = [x for x in data.get("third_party_names", []) if not any(t == x.lower() or t.startswith(x.lower() + " ") for t in tel)]
+    if not data["third_party_names"] and data.get("third_party_company", "").lower() == "telkomsel": data["third_party_company"] = ""
     me = CFG["my_name"]
     if me and me.lower() not in [x.lower() for x in data.get("telkomsel_names", [])]:
         data["telkomsel_names"] = [me] + [x for x in data.get("telkomsel_names", []) if not x.lower().startswith(me.lower().split()[0]) or x.lower() == me.lower()]

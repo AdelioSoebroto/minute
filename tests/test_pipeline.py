@@ -24,6 +24,22 @@ class Echo(unittest.TestCase):
         segs = [(1.0, "Speaker", "hello"), (5.0, "Speaker", "hello")]
         self.assertEqual(m.drop_echo(segs), segs)
 
+class Loops(unittest.TestCase):
+    def test_collapses_repetition_keeps_rest(self):
+        self.assertEqual(m.collapse_loops("Hi in the chat in the chat in the chat in the chat. Hello everyone."), "Hi in the chat in the chat. Hello everyone.")
+    def test_plain_text_untouched(self):
+        self.assertEqual(m.collapse_loops("no loop here at all"), "no loop here at all")
+
+class WeekdayDates(unittest.TestCase):
+    def test_corrects_wrong_friday_and_saturday(self):
+        import datetime
+        d0 = datetime.date(2026, 10, 20)   # Tuesday
+        self.assertEqual(m.fix_weekday_dates("paling lambat hari Jumat, 21 Oktober 2026", d0), "paling lambat hari Jumat, 23 Oktober 2026")
+        self.assertEqual(m.fix_weekday_dates("pada Sabtu (22 Oktober 2026)", d0), "pada Sabtu (24 Oktober 2026)")
+    def test_keeps_consistent_dates(self):
+        import datetime
+        self.assertEqual(m.fix_weekday_dates("Rabu, 21 Oktober 2026", datetime.date(2026, 10, 20)), "Rabu, 21 Oktober 2026")
+
 class Dates(unittest.TestCase):
     def test_ordinals(self):
         self.assertEqual(m.nice_date(2026, 10, 19), "October 19th, 2026")

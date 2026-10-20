@@ -369,6 +369,8 @@ struct HoldButton: View {
     let symbol: String
     let tint: Color
     let seconds: Double
+    var size: CGFloat = 92
+    var showTitle = true
     let action: () -> Void
     @State private var progress: CGFloat = 0
     @State private var pressing = false
@@ -379,15 +381,15 @@ struct HoldButton: View {
         VStack(spacing: 12) {
             ZStack {
                 Color.clear.glass(Circle(), tint: tint.opacity(pressing ? 0.35 : 0.18), interactive: true)
-                Circle().stroke(tint.opacity(0.22), lineWidth: 4)
+                Circle().stroke(tint.opacity(0.22), lineWidth: size > 70 ? 4 : 3)
                 Circle().trim(from: 0, to: progress)
-                    .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .stroke(tint, style: StrokeStyle(lineWidth: size > 70 ? 4 : 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                Image(systemName: symbol).font(.system(size: 30, weight: .medium)).foregroundStyle(tint)
+                Image(systemName: symbol).font(.system(size: size * 0.33, weight: .medium)).foregroundStyle(tint)
                     .scaleEffect(pressing && !reduceMotion ? 0.88 : 1)
                     .animation(.spring(duration: 0.3, bounce: 0.3), value: pressing)
             }
-            .frame(width: 92, height: 92)
+            .frame(width: size, height: size)
             .contentShape(Circle())
             .onLongPressGesture(minimumDuration: seconds, maximumDistance: 60, perform: {
                 stopTicker(); Haptic.confirm()
@@ -403,7 +405,7 @@ struct HoldButton: View {
                     withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
                 }
             })
-            Text(title).font(.callout).foregroundStyle(.secondary)
+            if showTitle { Text(title).font(.callout).foregroundStyle(.secondary) }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)

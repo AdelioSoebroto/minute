@@ -264,31 +264,49 @@ struct RecordCard: View {
     func showFlow() { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             switch r.phase {
             case .idle:
                 Picker("Mode", selection: $r.mode) { ForEach(Mode.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden()
-                HoldButton(title: "Hold to record · \(r.mode.hint.lowercased())", symbol: "mic.fill", tint: .red, seconds: 0.8) { r.start() }
+                    .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
+                HStack(spacing: 12) {
+                    HoldButton(title: "Hold to record", symbol: "mic.fill", tint: .red, seconds: 0.8, size: 58, showTitle: false) { r.start() }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Hold to record").font(.callout.weight(.semibold))
+                        Text(r.mode.hint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
             case .recording:
-                HStack(spacing: 6) { Circle().fill(.red).frame(width: 7, height: 7); Text("Recording · \(r.mode.rawValue)").font(.callout.weight(.semibold)) }
-                Text(clock(r.elapsed)).font(.system(size: 36, weight: .light, design: .rounded)).monospacedDigit()
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) { Circle().fill(.red).frame(width: 7, height: 7); Text("Recording · \(r.mode.rawValue)").font(.caption.weight(.semibold)) }
+                        Text(clock(r.elapsed)).font(.system(size: 30, weight: .light, design: .rounded)).monospacedDigit()
+                    }
+                    Spacer(minLength: 0)
+                    HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5, size: 58, showTitle: false) { r.stop(); showFlow() }
+                }
                 Waveform(samples: r.history)
                 if let w = r.warning {
                     Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5) { r.stop(); showFlow() }
+                Text("Hold the stop button to finish").font(.caption).foregroundStyle(.secondary)
             default:
-                if r.isBusy { ProgressView() } else { Image(systemName: r.phase == .done ? "checkmark.circle.fill" : "doc.text").font(.title2).foregroundStyle(r.phase == .done ? .green : .secondary) }
-                Text(statusText).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                Button("Open") { showFlow() }.glassButton(prominent: true)
-                if case .failed = r.phase { Button("Dismiss") { r.reset() }.buttonStyle(.borderless) }
-                if r.phase == .done { Button("New recording") { r.reset() }.buttonStyle(.borderless) }
+                HStack(spacing: 10) {
+                    if r.isBusy { ProgressView().controlSize(.small) }
+                    else { Image(systemName: r.phase == .done ? "checkmark.circle.fill" : "doc.text").foregroundStyle(r.phase == .done ? .green : .secondary) }
+                    Text(statusText).font(.callout).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    Button("Open") { showFlow() }.glassButton(prominent: true)
+                    if case .failed = r.phase { Button("Dismiss") { r.reset() }.glassButton() }
+                    if r.phase == .done { Button("New") { r.reset() }.glassButton() }
+                }
             }
         }
-        .padding(14).frame(maxWidth: .infinity)
-        .glass(RoundedRectangle(cornerRadius: 20))
-        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 4)
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6)
         .animation(.spring(duration: 0.4), value: r.phase)
     }
 

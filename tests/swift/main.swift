@@ -30,5 +30,14 @@ let md = ShareText.markdown(agenda: "Rapat A", date: "21 Oct", time: "10:00", in
 check(md.contains("# Rapat A") && md.contains("1. Satu") && md.contains("**Internal (IT):** Adel"), "markdown has agenda, topics, participants")
 check(!ShareText.plain(md).contains("**"), "plain text has no markdown marks")
 
+check(ActionItems.isAction("Dewi akan eskalasi ke vendor sebelum Jumat."), "detects an Indonesian action")
+check(ActionItems.isAction("Adel will send the draft by Friday."), "detects an English action")
+check(!ActionItems.isAction("The team reviewed the quarterly results."), "plain discussion is not an action")
+check(ActionItems.key(folder: "f", text: "Dewi, akan!") == ActionItems.key(folder: "f", text: "dewi akan"), "key ignores case and punctuation")
+let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("actions-test-\(UUID().uuidString).json")
+var st = ActionItems.State(); st.done.insert("a"); ActionItems.save(st, to: tmpURL)
+check(ActionItems.load(tmpURL).done == ["a"], "state round trip")
+try? FileManager.default.removeItem(at: tmpURL)
+
 print(failures == 0 ? "swift tests passed" : "\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

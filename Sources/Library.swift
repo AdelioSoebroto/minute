@@ -381,6 +381,8 @@ struct LibraryView: View {
     @State private var selection: URL?
     @State private var query = ""
     @State private var confirmDelete: Meeting?
+    @StateObject private var tracker = ActionTracker()
+    static let openItemsID = URL(string: "minute://open-items")!
 
     var filtered: [Meeting] {
         guard !query.isEmpty else { return lib.meetings }
@@ -411,6 +413,10 @@ struct LibraryView: View {
             RecordCard(r: r)
             ForEach(r.unfinished, id: \.self) { d in RecoveryCard(r: r, dir: d) }
             List(selection: $selection) {
+                Section {
+                    Label("Open items", systemImage: "checklist").tag(Self.openItemsID)
+                        .badge(tracker.openCount(lib.meetings))
+                }
                 ForEach(groups, id: \.0) { name, items in
                     Section(name) { ForEach(items) { m in row(m).tag(m.id) } }
                 }
@@ -427,7 +433,8 @@ struct LibraryView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) { StorageFooter() }
             .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
-            if let m = lib.meetings.first(where: { $0.id == selection }) { detail(m) }
+            if selection == Self.openItemsID { OpenItemsView(lib: lib, tracker: tracker) { selection = $0.id } }
+            else if let m = lib.meetings.first(where: { $0.id == selection }) { detail(m) }
             else { ContentUnavailableView("Select a meeting", systemImage: "doc.text.magnifyingglass", description: Text("Its minutes and transcript appear here.")) }
         }
         .frame(minWidth: 1260, minHeight: 640)

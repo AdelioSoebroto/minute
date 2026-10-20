@@ -80,3 +80,29 @@ enum ShareText {
             .replacingOccurrences(of: "  \n", with: "\n")
     }
 }
+
+// MARK: - Action items across meetings
+
+enum ActionItems {
+    private static let cues = ["akan ", "tolong", "follow up", "follow-up", "tindak lanjut", "deadline", "due ", "sebelum", "paling lambat", "harus", "perlu ", "segera",
+                               "action", "pic ", "will ", "to be ", "needs to", "need to", "should ", "must ", "eskalasi", "escalate", "siapkan", "prepare", "kirim", "send ",
+                               "by monday", "by tuesday", "by wednesday", "by thursday", "by friday", "by end", "minggu depan", "next week", "besok", "tomorrow", "hari ini", "today"]
+
+    static func isAction(_ topic: String) -> Bool {
+        let t = topic.lowercased() + " "
+        return cues.contains { t.contains($0) }
+    }
+
+    static func key(folder: String, text: String) -> String {
+        folder + "|" + String(text.lowercased().filter { $0.isLetter || $0.isNumber }.prefix(80))
+    }
+
+    /// Which items are done or dismissed, kept in one small file (~/.mom/actions.json) so it survives edits and app updates.
+    struct State: Codable, Equatable { var done: Set<String> = []; var dismissed: Set<String> = [] }
+
+    static func load(_ url: URL) -> State { (try? JSONDecoder().decode(State.self, from: Data(contentsOf: url))) ?? State() }
+    static func save(_ st: State, to url: URL) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(st).write(to: url, options: .atomic)
+    }
+}

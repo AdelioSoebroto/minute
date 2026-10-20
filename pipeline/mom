@@ -271,6 +271,74 @@ def learn_from_edits(d: Path):
         log("learned corrections: " + json.dumps(new, ensure_ascii=False))
     orig.write_text(cur.read_text())
 
+# ---------- first-run readiness: what this Mac still needs, and one-click installs ----------
+WHISPER_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+BREW = next((b for b in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew") if Path(b).exists()), None)
+
+def have_docx():
+    return run(["/usr/bin/python3", "-c", "import docx"]).returncode == 0
+
+def doctor():
+    pr = profile(); model = CFG["llm"] if LLM_PINNED else pr["model"]
+    ollama = shutil.which("ollama")
+    models = sh(["ollama", "list"]) if ollama else ""
+    llm_gb = 5.2 if model.endswith("8b") else 2.6
+    items = [
+        {"id": "tools", "title": "Speech tools", "detail": "whisper.cpp and ffmpeg turn the recording into text.",
+         "ok": bool(shutil.which("whisper-cli") and shutil.which("ffmpeg")), "action": "tools", "size": 0.1, "needs_brew": True},
+        {"id": "whisper", "title": "Speech recognition model", "detail": "Whisper large-v3-turbo, English and Bahasa Indonesia.",
+         "ok": Path(CFG["whisper_model"]).exists(), "action": "whisper", "size": 0.57},
+        {"id": "ollama", "title": "Language engine", "detail": "Ollama runs the minutes-writing model on this Mac.",
+         "ok": bool(ollama), "action": "tools", "size": 0.2, "needs_brew": True},
+        {"id": "llm", "title": "Minutes-writing model", "detail": f"{model} ({'standard' if pr['tier'] == 'standard' else 'light'} setup for this Mac).",
+         "ok": model in models, "action": "llm", "size": llm_gb, "blocked_by": None if ollama else "ollama"},
+        {"id": "docx", "title": "Word file support", "detail": "Fills your template.", "ok": have_docx(), "action": "docx", "size": 0.01},
+        {"id": "word", "title": "Microsoft Word (for PDF)", "detail": "PDFs are made with Word. Without it you still get the Word file.",
+         "ok": Path("/Applications/Microsoft Word.app").exists(), "action": None, "optional": True, "size": 0},
+    ]
+    return {"chip": sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]).strip(), "ram": pr["ram"], "tier": pr["tier"], "model": model,
+            "brew": bool(BREW), "items": items}
+
+def _stream(cmd, label, env=None):
+    """Run a command, turning its progress output into STAGE lines the app shows."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env or os.environ)
+    last = ""
+    buf = b""
+    while True:
+        ch = p.stdout.read(1)
+        if not ch: break
+        if ch in (b"\r", b"\n"):
+            t = buf.decode("utf-8", "ignore").strip(); buf = b""
+            m_ = re.search(r"(\d{1,3})\s*%", t)
+            if m_ and m_.group(1) != last: last = m_.group(1); stage(f"{label} {last}%")
+        else: buf += ch
+    return p.wait()
+
+def get_whisper():
+    dst = Path(CFG["whisper_model"]); dst.parent.mkdir(parents=True, exist_ok=True)
+    part = dst.with_suffix(".part")
+    opener = urllib.request.build_opener()       # unlike the rest of Minute, this one may use the system proxy: it is the one thing that needs the internet
+    last = -1
+    with opener.open(WHISPER_URL, timeout=60) as r, open(part, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0); got = 0
+        while True:
+            b = r.read(1 << 20)
+            if not b: break
+            f.write(b); got += len(b)
+            pc = int(got * 100 / total) if total else 0
+            if pc != last: last = pc; stage(f"Downloading the speech model {pc}%")
+    if part.stat().st_size < 400_000_000: part.unlink(missing_ok=True); raise SystemExit("The download was incomplete. Check the connection and try again.")
+    part.rename(dst); print("DONE", flush=True)
+
+def install_tools():
+    if not BREW: raise SystemExit("Homebrew is not installed. Install it from brew.sh, then try again.")
+    need = [pkg for pkg, ok in (("whisper-cpp", shutil.which("whisper-cli")), ("ffmpeg", shutil.which("ffmpeg")), ("ollama", shutil.which("ollama"))) if not ok]
+    for pkg in need:
+        stage(f"Installing {pkg}")
+        if _stream([BREW, "install", pkg], f"Installing {pkg}", {**os.environ, "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ENV_HINTS": "1"}):
+            raise SystemExit(f"Could not install {pkg}.")
+    print("DONE", flush=True)
+
 def whisper_prompt():
     terms = ", ".join(glossary()[-40:])
     base = ("Meeting in English and Bahasa Indonesia, formal and casual, switching between them. "
@@ -1106,11 +1174,25 @@ def main():
         print("HARDWARE " + json.dumps({"chip": chip, "ram": pr["ram"], "tier": pr["tier"], "model": model, "installed": have,
                                         "ollama": bool(shutil.which("ollama")), "size_gb": 5.2 if model.endswith("8b") else 2.6}), flush=True)
         return
+    if args[0] == "--doctor":
+        print("DOCTOR " + json.dumps(doctor()), flush=True); return
+    if args[0] == "--get-whisper": return get_whisper()
+    if args[0] == "--install-tools": return install_tools()
+    if args[0] == "--install-docx":
+        stage("Installing Word file support")
+        r = run(["/usr/bin/python3", "-m", "pip", "install", "--user", "python-docx"])
+        if r.returncode: raise SystemExit("Could not install python-docx: " + r.stderr[-200:])
+        print("DONE", flush=True); return
     if args[0] == "--pull-model":
         model = CFG["llm"] if LLM_PINNED else profile()["model"]
+        if not shutil.which("ollama"): raise SystemExit("The language engine (Ollama) is not installed yet.")
+        if not ollama_up():
+            ensure_ollama_server = subprocess.Popen(["ollama", "serve"], env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            for _ in range(30):
+                if ollama_up(): break
+                time.sleep(1)
         stage("Downloading the language model")
-        r = subprocess.run(["ollama", "pull", model], capture_output=True, text=True)
-        if r.returncode: raise SystemExit("Download failed: " + (r.stderr or r.stdout)[-200:])
+        if _stream(["ollama", "pull", model], "Downloading the language model"): raise SystemExit("Download failed. Check the connection and try again.")
         print("DONE", flush=True); return
     if args[0] == "--learn-template":
         org = args[args.index("--org") + 1] if "--org" in args else ""

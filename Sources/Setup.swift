@@ -183,21 +183,23 @@ struct SetupView: View {
     @State private var sysOK = false
     @State private var deleteAudio = Storage.deleteAudio
     @State private var pendingMove = 0
+    @State private var allReady = false
 
     var cloudChosen: Bool { Storage.places().first { $0.url.standardizedFileURL.path == choice.standardizedFileURL.path }?.cloud ?? false }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) { ForEach(0..<5) { i in Capsule().fill(i <= step ? Color.accentColor : Color.secondary.opacity(0.25)).frame(height: 4) } }
+            HStack(spacing: 6) { ForEach(0..<6) { i in Capsule().fill(i <= step ? Color.accentColor : Color.secondary.opacity(0.25)).frame(height: 4) } }
                 .padding(.horizontal, 40).padding(.top, 26).animation(.spring(duration: 0.4), value: step)
             ZStack {
                 Group {
                     switch step {
-                    case 0: location
-                    case 1: templateStep
-                    case 2: hardwareStep
-                    case 3: permissions
-                    default: finish
+                    case 0: WelcomePage { step = 1 }
+                    case 1: readyStep
+                    case 2: location
+                    case 3: templateStep
+                    case 4: permissions
+                    default: TourPages(finish: { Storage.setupDone = true; dismiss() }, back: { step = 4 })
                     }
                 }
                 .id(step)
@@ -206,7 +208,7 @@ struct SetupView: View {
             .animation(.spring(duration: 0.5, bounce: 0.1), value: step)
             .clipped()
         }
-        .frame(width: 560, height: 640)
+        .frame(width: 620, height: 720)
         .background(.background)
     }
 
@@ -224,10 +226,11 @@ struct SetupView: View {
             if let e = mover.error { Text(e).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 if mover.busy { ProgressView(value: mover.progress).frame(width: 120); Text(mover.status).font(.caption).foregroundStyle(.secondary) }
+                Button("Back") { step = 1 }.glassButton().controlSize(.large)
                 Spacer()
                 Button("Continue") {
                     Storage.deleteAudio = deleteAudio
-                    mover.change(to: choice) { ok in if ok { step = 1 } }
+                    mover.change(to: choice) { ok in if ok { step = 3 } }
                 }.glassButton(prominent: true).controlSize(.large).disabled(mover.busy).keyboardShortcut(.defaultAction)
             }
         }.padding(40)
@@ -239,23 +242,23 @@ struct SetupView: View {
             Text("Your minutes template").font(.largeTitle.weight(.semibold))
             Text("Bring your own Word template and Minute learns where everything goes, or start from a clean one and add your logo.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            TemplatePicker(showSkip: true) { step = 2 }
+            TemplatePicker(showSkip: true) { step = 4 }
             Spacer(minLength: 0)
-            HStack { Button("Back") { step = 0 }.glassButton().controlSize(.large); Spacer() }
+            HStack { Button("Back") { step = 2 }.glassButton().controlSize(.large); Spacer() }
         }.padding(40)
     }
 
-    var hardwareStep: some View {
+    var readyStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "cpu").font(.system(size: 44)).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
-            Text("Tuned for this Mac").font(.largeTitle.weight(.semibold))
-            Text("Everything runs on your Mac. Minute picks the language model that suits its memory.").foregroundStyle(.secondary)
-            HardwareStep()
-            Spacer()
+            Image(systemName: "checkmark.seal").font(.system(size: 44)).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
+            Text("Get Minute ready").font(.largeTitle.weight(.semibold))
+            Text("Minute works on this Mac, so it needs a speech model and a writing model. They download once.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ScrollView { ReadyStep { ok in allReady = ok }.padding(.vertical, 2) }
+            Spacer(minLength: 0)
             HStack {
-                Button("Back") { step = 1 }.glassButton().controlSize(.large)
+                Button("Back") { step = 0 }.glassButton().controlSize(.large)
                 Spacer()
-                Button("Continue") { step = 3 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
+                Button(allReady ? "Continue" : "Continue Anyway") { step = 2 }.glassButton(prominent: allReady).controlSize(.large).keyboardShortcut(.defaultAction)
             }
         }.padding(40)
     }
@@ -275,9 +278,9 @@ struct SetupView: View {
             }
             Spacer()
             HStack {
-                Button("Back") { step = 2 }.glassButton().controlSize(.large)
+                Button("Back") { step = 3 }.glassButton().controlSize(.large)
                 Spacer()
-                Button("Continue") { step = 4 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
+                Button("Continue") { step = 5 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
             }
         }.padding(40)
     }
@@ -291,19 +294,6 @@ struct SetupView: View {
             else { Button(action, action: perform).glassButton().controlSize(.large) }
         }
         .padding(14).glass(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    var finish: some View {
-        VStack(spacing: 14) {
-            Spacer()
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 64, weight: .light)).foregroundStyle(.green).symbolRenderingMode(.hierarchical)
-            Text("You're all set").font(.largeTitle.weight(.semibold))
-            Text("Meetings are saved in\n\(Storage.root.path.replacingOccurrences(of: home.path, with: "~"))").multilineTextAlignment(.center).foregroundStyle(.secondary)
-            Text("Hold the red button to record. You can change the folder any time in Settings (⌘,); the whole library moves with it.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380)
-            Spacer()
-            Button("Start using Minute") { Storage.setupDone = true; dismiss() }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
-        }.padding(40).frame(maxWidth: .infinity)
     }
 }
 
@@ -358,7 +348,7 @@ struct SettingsView: View {
                 TemplatePicker { tplVersion += 1 }.id(tplVersion)
             } header: { Text("Template") }
 
-            Section { HardwareStep() } header: { Text("This Mac") }
+            Section { ReadyStep() } header: { Text("This Mac") }
 
             Section {
                 TextEditor(text: $terms).font(.system(.callout, design: .monospaced)).frame(height: 110)
@@ -375,7 +365,7 @@ struct SettingsView: View {
             } header: { Text("Privacy") }
 
             Section {
-                Button("Run Setup Again…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
+                Button("Welcome Tour & Setup…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
             } header: { Text("Setup") }
         }
         .formStyle(.grouped).frame(width: 560, height: 820)

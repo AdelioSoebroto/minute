@@ -8,6 +8,7 @@ rm -rf build; mkdir -p "$APP/Contents/MacOS"
 swiftc -target arm64-apple-macos14.2 -parse-as-library -O -o "$APP/Contents/MacOS/Minute" Sources/*.swift \
   -framework SwiftUI -framework AppKit -framework AVFoundation -framework CoreAudio -framework UserNotifications
 cp Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"; cp icon/Minute.icns "$APP/Contents/Resources/Minute.icns"
 codesign --force --sign - "$APP"
 echo "built $APP"
 if [[ "$1" == deploy ]]; then

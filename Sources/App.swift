@@ -45,6 +45,7 @@ func runMom(_ args: [String], full: Bool = false, stage: @escaping @Sendable (St
         let p = Process()
         p.executableURL = URL(fileURLWithPath: momCLI)
         p.arguments = args
+        p.qualityOfService = .utility   // heavy work runs behind the user's apps
         p.environment = ProcessInfo.processInfo.environment.merging(["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"]) { $1 }
         let out = Pipe(); p.standardOutput = out; p.standardError = out
         let tail = Tail()

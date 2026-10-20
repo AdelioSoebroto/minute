@@ -74,6 +74,10 @@ build.sh               build, sign (ad hoc) and install
 - Audio is written to disk continuously; if anything fails after recording, the audio is kept and **Draft minutes** in the library retries. Each meeting folder has a `mom.log`.
 - Tests: `python3 tests/test_pipeline.py`
 
+## Stays cool and quiet
+
+The pipeline sizes its work to the Mac every time it runs (`device_profile()` in `pipeline/mom`): RAM, power source and battery level, Low Power Mode and macOS thermal throttling pick **full** (on power), **balanced** (on battery) or **eco** (low battery, Low Power Mode or throttling: greedy transcription, no fact-check pass, the smaller model if installed). It runs at low priority, gives the language model only as much context as the transcript needs (the main cost in RAM), keeps one model loaded with a q8 cache, pauses if macOS is throttling, and unloads the model the moment it is done. Optional: `ollama pull qwen3:8b` for the eco profile.
+
 ## Privacy
 
 Recording a meeting needs the participants' consent and may be restricted by company policy. Minute never uploads audio or text; keep the generated folders as confidential as the meetings themselves.

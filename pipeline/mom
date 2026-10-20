@@ -20,6 +20,43 @@ if cfgp.exists():
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")
 
+def sh(cmd):
+    try: return subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+    except Exception: return ""
+
+def device_profile():
+    """Pick how hard to work from this Mac's RAM, power source, Low Power Mode and thermal state, so it stays cool and quiet."""
+    ram = int(sh(["sysctl", "-n", "hw.memsize"]).strip() or 0) / 2**30
+    batt = sh(["pmset", "-g", "batt"])
+    on_ac = "AC Power" in batt
+    m = re.search(r"(\d+)%", batt); pct = int(m.group(1)) if m else 100
+    low_power = bool(re.search(r"lowpowermode\s+1", sh(["pmset", "-g"])))
+    m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", sh(["pmset", "-g", "therm"])); limit = int(m.group(1)) if m else 100
+    if limit < 100 or low_power or (not on_ac and pct < 30): mode = "eco"
+    elif not on_ac: mode = "balanced"
+    else: mode = "full"
+    cap = 32768 if ram >= 48 else 16384 if ram >= 20 else 8192
+    return {"mode": mode, "ram": round(ram), "ac": on_ac, "pct": pct, "thermal_limit": limit, "ctx_cap": cap,
+            "beam": 1 if mode == "eco" else 2 if mode == "balanced" else 5, "threads": 2 if mode == "eco" else 4,
+            "verify": mode != "eco", "nice": 15 if mode == "eco" else 10}
+
+PROFILE = None
+def profile():
+    global PROFILE
+    if PROFILE is None:
+        PROFILE = device_profile()
+        log("profile " + json.dumps(PROFILE))
+        try: os.nice(PROFILE["nice"])     # stay behind the user's apps so the Mac stays responsive
+        except Exception: pass
+    return PROFILE
+
+def cooldown():
+    """If macOS is throttling the CPU, give it a moment before the next heavy step."""
+    for _ in range(6):
+        m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", sh(["pmset", "-g", "therm"]))
+        if not m or int(m.group(1)) >= 100: return
+        stage("Letting the Mac cool down"); time.sleep(10)
+
 LOGF = None
 def log(msg):
     if LOGF:
@@ -140,7 +177,8 @@ HALLU = re.compile(r"^(thanks? for watching|thank you\.?|terima kasih\.?|subtitl
 def whisper(chunk: Path, lang: str):
     out = chunk.with_suffix("")
     cmd = ["whisper-cli", "-m", CFG["whisper_model"], "-f", str(chunk), "-l", lang, "-oj", "-of", str(out),
-           "--prompt", whisper_prompt(), "--suppress-nst"]
+           "--prompt", whisper_prompt(), "--suppress-nst",
+           "-bs", str(profile()["beam"]), "-bo", str(profile()["beam"]), "-t", str(profile()["threads"])]
     r = run(cmd)
     if r.returncode: raise SystemExit("whisper failed: " + r.stderr[-300:])
     return json.loads(Path(str(out) + ".json").read_text())
@@ -189,13 +227,16 @@ def pick_model():
     except Exception:
         return
     names = [m["name"] for m in tags]
+    small = CFG.get("llm_small", "qwen3:8b")
+    if profile()["mode"] == "eco" and profile()["ram"] <= 24 and small in names and small != CFG["llm"]:
+        CFG["llm"] = small; log("eco: using smaller model " + small); return
     if CFG["llm"] in names or any(n.split(":")[0] == CFG["llm"] for n in names): return
     if names: CFG["llm"] = names[0]; log("fallback model " + names[0])
     else: raise SystemExit(f"No language model installed. Run: ollama pull {CFG['llm']}")
 
 def ensure_ollama():
     if ollama_up(): pick_model(); return
-    subprocess.Popen(["ollama", "serve"], env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434", "NO_PROXY": "*"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    subprocess.Popen(["ollama", "serve"], env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434", "NO_PROXY": "*", "OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1", "OLLAMA_MAX_LOADED_MODELS": "1"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(30):
         if ollama_up(): pick_model(); return
         time.sleep(1)
@@ -227,8 +268,12 @@ SCHEMA = {"type": "object", "required": ["agenda", "telkomsel_names", "telkomsel
                          "third_party_company": {"type": "string"}, "topics": {"type": "array", "items": {"type": "string"}}}}
 
 def chat(system, user, schema=None):
-    payload = {"model": CFG["llm"], "stream": False, "think": False, "keep_alive": "2m",
-               "options": {"num_ctx": CFG["ctx"], "temperature": 0.2},
+    pr = profile()
+    need = int((len(system) + len(user)) / 2.8) + 1800            # rough tokens in + room for the answer
+    ctx = min(pr["ctx_cap"], max(4096, -(-need // 2048) * 2048))  # only as much context as needed: it is what costs RAM
+    cooldown()
+    payload = {"model": CFG["llm"], "stream": False, "think": False, "keep_alive": "20s",
+               "options": {"num_ctx": ctx, "temperature": 0.2},
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     if schema: payload["format"] = schema
     req = urllib.request.Request("http://127.0.0.1:11434/api/chat", json.dumps(payload).encode(), {"Content-Type": "application/json"})
@@ -310,10 +355,10 @@ def make_mom(transcript: str, session: Path):
     system = SYSTEM.format(lang=lang, examples=ex, me=CFG["my_name"])
     gl = glossary()
     if gl: system += "\nKnown names and terms, SPELLING REFERENCE ONLY (use these spellings when the transcript has a similar-sounding word). These people and terms are NOT necessarily in this meeting: never add anyone to the attendee lists unless the transcript mentions them: " + "; ".join(gl[-80:])
-    if len(transcript) > 60000:  # map-reduce for very long meetings
+    if len(transcript) > (profile()["ctx_cap"] - 5000) * 2.8:  # map-reduce for very long meetings
         parts, cur = [], ""
         for line in transcript.splitlines(keepends=True):
-            if len(cur) + len(line) > 40000: parts.append(cur); cur = ""
+            if len(cur) + len(line) > (profile()["ctx_cap"] - 6000) * 2.2: parts.append(cur); cur = ""
             cur += line
         parts.append(cur)
         notes = []
@@ -344,6 +389,7 @@ def make_mom(transcript: str, session: Path):
     data = json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}{notes}", SCHEMA))
     # second pass: check the draft against the transcript and drop anything it does not support
     try:
+        if not profile()["verify"]: raise RuntimeError("eco profile: fact-check skipped")
         stage("Checking the minutes against the transcript")
         checked = json.loads(chat(
             "You are a strict fact-checker for minutes of meeting. Compare the DRAFT with the TRANSCRIPT. Remove or correct any statement, name, number, date or owner that the transcript does not support. Fix names and terms to match the known spellings" + (" (spelling reference only; remove any attendee that the transcript does not mention): " + "; ".join(gl[-80:]) if gl else "") + ". Keep the style and language. Do not add new topics unless an important decision or action item in the transcript is missing, then add it. Return the corrected draft in the same JSON format.",
@@ -558,7 +604,15 @@ def main():
     (d / "MoM.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
     print("DONE", d, flush=True)
 
+def unload():
+    """Free the model's RAM as soon as we are done instead of keeping ~10 GB resident."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:11434/api/generate", json.dumps({"model": CFG["llm"], "keep_alive": 0}).encode(), {"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception: pass
+
 if __name__ == "__main__":
+    import atexit; atexit.register(unload)
     try:
         main()
     except SystemExit:

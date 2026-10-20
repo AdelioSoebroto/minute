@@ -12,7 +12,7 @@ from pathlib import Path
 HOME = Path.home()
 CFG = {"whisper_model": str(HOME / ".mom/models/ggml-large-v3-turbo.bin"),
        "llm": "qwen3:14b", "mom_language": "auto", "ctx": 32768,
-       "keep_audio": True, "title": ""}
+       "keep_audio": True, "title": "", "my_name": "Adelio Ferhan", "my_unit": "IT Digital Advertising Management"}
 cfgp = HOME / ".mom/config.json"
 if cfgp.exists():
     CFG.update(json.loads(cfgp.read_text()))
@@ -85,6 +85,22 @@ def mean_volume(wav, a, b):
     m = re.search(r"mean_volume: (-?[\d.]+)", r.stderr)
     return float(m.group(1)) if m else -91.0
 
+# Informal Indonesian / Jaksel-style code-switching and office slang. The transcriber is told to keep these as spoken,
+# and the drafter uses the meanings to understand them. Add your own lines ("said = meaning") to ~/.mom/slang.txt.
+SLANG = """gue/gw/gua = saya; lo/lu/elu = kamu; nggak/gak/ga/enggak/engga = tidak; udah/dah = sudah; belom = belum; banget/bgt = sekali;
+bakal = akan; kudu = harus; abis = setelah / habis; ntar/entar = nanti; bentar = sebentar; trus/terus = lalu; kayak/kek = seperti;
+doang = saja; emang/emg = memang; gimana/gmn = bagaimana; kenapa/knp = mengapa; makanya = oleh karena itu; soalnya = karena;
+sih/deh/dong/kok/lah/nih/tuh/kan/yah/loh = penegas, abaikan; wkwk/haha = tawa; mantap/sip/siap = setuju / dimengerti; gas = lanjutkan;
+acc = setuju / approve; otw = sedang menuju / dalam proses; asap = secepatnya; pic = penanggung jawab; eskalasi = naikkan ke atasan;
+ngecek = memeriksa; nge-push = mengunggah; di-follow up = ditindaklanjuti; ngebahas = membahas; ngurusin = menangani; ngomongin = membicarakan;
+mepet = sempit waktunya; molor = tertunda; kelar = selesai; rampung = selesai; kendala = masalah; ketemu = bertemu / ditemukan;
+nanya = bertanya; minta tolong = permintaan bantuan; mas/mbak/bang/kak/pak/bu = sapaan hormat; oke/ok/sip = baik;
+besok = hari berikutnya; lusa = dua hari lagi; minggu depan = minggu setelah ini; hari ini/tadi/kemarin = relatif terhadap tanggal rapat"""
+
+def slang_lines():
+    extra = HOME / ".mom/slang.txt"
+    return SLANG + ("\n" + extra.read_text() if extra.exists() else "")
+
 GLOSS = HOME / ".mom/glossary.txt"
 def glossary():
     return [l.strip() for l in GLOSS.read_text().splitlines() if l.strip()] if GLOSS.exists() else []
@@ -98,7 +114,10 @@ def learn_terms(data):
 
 def whisper_prompt():
     terms = ", ".join(glossary()[-40:])
-    return ("Meeting in English and Bahasa Indonesia. Rapat dalam bahasa Indonesia dan English." + (f" Terms: {terms}." if terms else ""))[:600]
+    base = ("Meeting in English and Bahasa Indonesia, formal and casual, switching between them. "
+            "Obrolan santai dan formal: gue, lo, nggak, udah, banget, sih, dong, deh, kok, wkwk, deploy, follow up, approval. "
+            "Transcribe exactly as spoken, keep slang and English words as said.")
+    return (base + (f" Terms: {terms}." if terms else ""))[:700]
 
 HALLU = re.compile(r"^(thanks? for watching|thank you\.?|terima kasih\.?|subtitles? by.*|\W*)$", re.I)
 
@@ -116,7 +135,7 @@ def transcribe(label, wav, tmp, total_done, n_total):
     segs = []
     for i in range(len(cuts) - 1):
         a, b = cuts[i], cuts[i + 1]
-        stage(f"Transcribing {label}: {int(a // 60)} of {int(total // 60)} min")
+        stage(f"Transcribing {label}: {int(a // 60)} of {max(1, round(total / 60))} min")
         if b - a < 0.8 or mean_volume(wav, a, b) < -50: continue
         ch = tmp / f"{label}_{i:04d}.wav"
         run(["ffmpeg", "-y", "-ss", str(a), "-t", str(b - a), "-i", str(wav), "-c", "copy", str(ch)])
@@ -177,11 +196,11 @@ def chat(system, user):
 
 SYSTEM = """You write minutes of meeting (MoM) for a Telkomsel team from a raw speech-to-text transcript. The transcript mixes English and Bahasa Indonesia and may contain recognition errors; infer obvious corrections (product names, technical terms) but never invent facts.
 Return JSON with:
-- agenda: short meeting title, like "Operational - Update SSL Ondeck".
-- telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. Telkomsel = internal staff; third party = vendors or other companies. If unsure, put in telkomsel_names. Never guess names.
+- agenda: short meeting title, in the form "<Category> - <Subject>" using words actually said in the meeting, never copied from the examples.
+- telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. Telkomsel = internal staff; third party = vendors or other companies, and anyone said to be 'from' or 'dari' a company other than Telkomsel belongs under third party with that company. If unsure, put in telkomsel_names. Never guess names. Never list the labels Me, Others or Speaker as people.
 - telkomsel_unit / third_party_company: unit or company name if stated, else "".
 - topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
-'Me' is the person who recorded; 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording.
+'Me' is the person who recorded ({me}); 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording. Never write Me, Others or Speaker in the output: use the person's real name, or 'peserta rapat' when unknown.
 Style examples of topics (Bahasa Indonesia):
 {examples}
 {lang}"""
@@ -224,15 +243,40 @@ def nice_date(y, m, d):
     suf = "th" if 11 <= d <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(d % 10, "th")
     return f"{MONTHS[m - 1]} {d}{suf}, {y}"
 
+ANALYSIS_SCHEMA = {"type": "object", "required": ["summary", "decisions", "action_items", "open_questions"],
+    "properties": {"summary": {"type": "string"},
+                   "decisions": {"type": "array", "items": {"type": "string"}},
+                   "action_items": {"type": "array", "items": {"type": "object", "required": ["task", "owner", "due"],
+                       "properties": {"task": {"type": "string"}, "owner": {"type": "string"}, "due": {"type": "string"}}}},
+                   "open_questions": {"type": "array", "items": {"type": "string"}},
+                   "informal_terms": {"type": "array", "items": {"type": "string"}}}}
+
+def analyse(transcript: str, meta: str):
+    """Read the conversation the way a person would: what was decided, who took what, by when. Handles casual speech, slang and code-switching."""
+    system = ("You are an experienced Indonesian corporate secretary who attended this meeting. The transcript is a raw speech-to-text of real, natural conversation: "
+              "it mixes formal and informal (casual, slang, Jaksel-style) Bahasa Indonesia and English, with fillers, half sentences, interruptions, jokes and agreement noises. Read it as a human would.\n"
+              "Understand slang and casual wording using this lexicon (said = meaning):\n" + slang_lines() + "\n"
+              "Do the following:\n- Ignore filler, small talk and jokes unless they carry a decision.\n"
+              "- Work out real intent: 'gas aja', 'oke sip', 'acc' mean agreement; 'nanti gue kabarin' is a commitment by the speaker; 'kayaknya', 'mungkin' mean not yet decided.\n"
+              "- Who said it: " + "'Me' is the person who recorded the meeting, " + CFG["my_name"] + "; 'Others' are the remaining participants whose names are only known if said aloud. "
+              "In your output never write the words Me, Others or Speaker: use " + CFG["my_name"] + " for Me, the person's name if it was said, or 'peserta rapat' / 'pihak terkait' when unknown.\n"
+              "- Assign an owner only if a person is named or clearly the speaker; otherwise 'Unassigned'.\n"
+              "- Convert relative dates (besok, lusa, minggu depan, nanti sore) to absolute dates using the meeting date given; if unclear write 'TBD'.\n"
+              "- decisions: only what was actually agreed. action_items: concrete tasks with owner and due. open_questions: unresolved points.\n"
+              "- informal_terms: any slang you had to interpret, as 'said = meaning'.\n"
+              "- summary: 2-3 plain sentences of what the meeting was about.\n"
+              "Write in formal Bahasa Indonesia (keep English technical terms). Never invent facts.")
+    return json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}", ANALYSIS_SCHEMA))
+
 def make_mom(transcript: str, session: Path):
     lang = {"auto": "Write the topics in Bahasa Indonesia, keeping English technical terms as spoken.",
             "en": "Write the topics in English.", "id": "Write the topics in Bahasa Indonesia."}.get(CFG["mom_language"], "Write the topics in Bahasa Indonesia.")
     ex = template_examples()
     mine = past_examples(session)
     if mine: ex += "\nMore examples from this user's earlier minutes (match their wording):\n" + mine
-    system = SYSTEM.format(lang=lang, examples=ex)
+    system = SYSTEM.format(lang=lang, examples=ex, me=CFG["my_name"])
     gl = glossary()
-    if gl: system += "\nKnown names and terms, use exactly these spellings when the transcript has a similar-sounding word: " + "; ".join(gl[-80:])
+    if gl: system += "\nKnown names and terms, SPELLING REFERENCE ONLY (use these spellings when the transcript has a similar-sounding word). These people and terms are NOT necessarily in this meeting: never add anyone to the attendee lists unless the transcript mentions them: " + "; ".join(gl[-80:])
     if len(transcript) > 60000:  # map-reduce for very long meetings
         parts, cur = [], ""
         for line in transcript.splitlines(keepends=True):
@@ -244,17 +288,44 @@ def make_mom(transcript: str, session: Path):
             stage(f"Summarising part {i + 1} of {len(parts)}")
             notes.append(chat("Condense this meeting transcript part into detailed bullet notes: topics, who said what, decisions, action items with owners and due dates, numbers, names.", p))
         transcript = "\n\n".join(notes)
+    n0 = session.name
+    meta = f"Recorded {n0[:10]} at {n0[11:13]}:{n0[13:15]}"
+    try:
+        import datetime
+        meta += " (" + datetime.date(int(n0[:4]), int(n0[5:7]), int(n0[8:10])).strftime("%A") + ")"
+    except Exception: pass
+    notes = ""
+    try:
+        stage("Understanding the conversation")
+        an = analyse(transcript, meta)
+        (session / "analysis.json").write_text(json.dumps(an, ensure_ascii=False, indent=2))
+        notes = "\n\nANALYSIS OF THE MEETING (use it, but stay faithful to the transcript):\n" + json.dumps(an, ensure_ascii=False)
+    except Exception as e:
+        log("analysis skipped: " + repr(e))
+    system += "\nThe transcript is casual and mixed-register. Write the minutes in formal, professional language regardless of how informally it was spoken; do not copy slang. Express relative dates as absolute dates."
     stage("Writing the MoM")
-    data = json.loads(chat(system, f"TRANSCRIPT:\n{transcript}", SCHEMA))
+    data = json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}{notes}", SCHEMA))
     # second pass: check the draft against the transcript and drop anything it does not support
     try:
         stage("Checking the minutes against the transcript")
         checked = json.loads(chat(
-            "You are a strict fact-checker for minutes of meeting. Compare the DRAFT with the TRANSCRIPT. Remove or correct any statement, name, number, date or owner that the transcript does not support. Fix names and terms to match the known spellings" + (": " + "; ".join(gl[-80:]) if gl else "") + ". Keep the style and language. Do not add new topics unless an important decision or action item in the transcript is missing, then add it. Return the corrected draft in the same JSON format.",
-            f"TRANSCRIPT:\n{transcript}\n\nDRAFT:\n{json.dumps(data, ensure_ascii=False)}", SCHEMA))
+            "You are a strict fact-checker for minutes of meeting. Compare the DRAFT with the TRANSCRIPT. Remove or correct any statement, name, number, date or owner that the transcript does not support. Fix names and terms to match the known spellings" + (" (spelling reference only; remove any attendee that the transcript does not mention): " + "; ".join(gl[-80:]) if gl else "") + ". Keep the style and language. Do not add new topics unless an important decision or action item in the transcript is missing, then add it. Return the corrected draft in the same JSON format.",
+            f"MEETING INFO: {meta}\n\nTRANSCRIPT (casual speech; slang lexicon: {slang_lines()[:1500]}):\n{transcript}\n\nDRAFT:\n{json.dumps(data, ensure_ascii=False)}", SCHEMA))
         if checked.get("topics"): data = checked
     except Exception as e:
         log("verify pass skipped: " + repr(e))
+    for k in ("telkomsel_names", "third_party_names"):
+        data[k] = [x for x in data.get(k, []) if x.strip().lower() not in ("me", "others", "speaker", "unidentified", "unknown")]
+    low = transcript.lower()
+    def mentioned(n):
+        return any(len(t) >= 3 and t.lower() in low for t in n.split())
+    for k in ("telkomsel_names", "third_party_names"):
+        data[k] = [x for x in data.get(k, []) if mentioned(x)]   # never list someone the transcript does not mention
+    me = CFG["my_name"]
+    if me and me.lower() not in [x.lower() for x in data.get("telkomsel_names", [])]:
+        data["telkomsel_names"] = [me] + [x for x in data.get("telkomsel_names", []) if not x.lower().startswith(me.lower().split()[0]) or x.lower() == me.lower()]
+        if not data.get("telkomsel_unit") and CFG.get("my_unit"): data["telkomsel_unit"] = CFG["my_unit"]
+    data["topics"] = [re.sub(r"\b(Me|Others|Speaker)\b", lambda m_: me if m_.group(1) == "Me" else "peserta rapat", t) for t in data.get("topics", [])]
     n = session.name
     try:
         y, mo, d = int(n[:4]), int(n[5:7]), int(n[8:10]); hh, mm = int(n[11:13]), int(n[13:15])
@@ -310,17 +381,36 @@ def export(d: Path):
     out = d / "MoM.docx"
     doc.save(str(out))
     stage("Creating PDF")
-    pdf = d / "MoM.pdf"
+    final_pdf = d / "MoM.pdf"
+    if final_pdf.exists(): final_pdf.unlink()
+    # Word opens files in synced or quarantined folders in Protected View, which cannot export. Convert a copy in a plain work folder.
+    work = HOME / ".mom/work"; work.mkdir(parents=True, exist_ok=True)
+    out = work / "MoM.docx"; shutil.copy2(d / "MoM.docx", out)
+    run(["xattr", "-c", str(out)])
+    pdf = work / "MoM.pdf"
     if pdf.exists(): pdf.unlink()
     script = f'''tell application "Microsoft Word"
   open POSIX file "{out}"
+  repeat 40 times
+    try
+      if (count of documents) > 0 then exit repeat
+    end try
+    delay 0.5
+  end repeat
   set dd to active document
   save as dd file name "{pdf}" file format format PDF
   close dd saving no
 end tell'''
-    r = run(["osascript", "-e", script])
-    if r.returncode or not pdf.exists():
-        raise SystemExit("PDF export failed (needs Microsoft Word): " + r.stderr[-300:])
+    err = ""
+    for attempt in range(3):
+        r = run(["osascript", "-e", script])
+        if pdf.exists(): break
+        err = r.stderr[-300:]; log(f"pdf attempt {attempt + 1} failed: {err}")
+        run(["osascript", "-e", 'tell application "Microsoft Word" to close every document saving no'])
+        time.sleep(2)
+    if not pdf.exists():
+        raise SystemExit("PDF export failed (needs Microsoft Word; the Word file was saved): " + err)
+    shutil.move(str(pdf), str(final_pdf)); out.unlink(missing_ok=True)
     print("DONE", d, flush=True)
 
 # ---------- tidy: clean up spacing, wording, punctuation of an edited MoM.json ----------

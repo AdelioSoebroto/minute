@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Build Minute, install the app to ~/Applications and the pipeline to ~/.mom/bin.
-# Usage: ./build.sh [deploy]   (without "deploy" it only builds into ./build)
+# Usage: [ICON=light] ./build.sh [deploy]   (without "deploy" it only builds into ./build)
 set -e
 cd "${0:A:h}"
 APP=build/Minute.app
@@ -8,7 +8,7 @@ rm -rf build; mkdir -p "$APP/Contents/MacOS"
 swiftc -target arm64-apple-macos14.2 -parse-as-library -O -o "$APP/Contents/MacOS/Minute" Sources/*.swift \
   -framework SwiftUI -framework AppKit -framework AVFoundation -framework CoreAudio -framework UserNotifications
 cp Info.plist "$APP/Contents/Info.plist"
-mkdir -p "$APP/Contents/Resources"; cp icon/Minute.icns "$APP/Contents/Resources/Minute.icns"
+mkdir -p "$APP/Contents/Resources"; if [[ "$ICON" == light ]]; then cp icon/Minute-light.icns "$APP/Contents/Resources/Minute.icns"; else cp icon/Minute.icns "$APP/Contents/Resources/Minute.icns"; fi
 codesign --force --sign - "$APP"
 echo "built $APP"
 if [[ "$1" == deploy ]]; then

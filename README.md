@@ -38,6 +38,10 @@ Config (optional) lives in `~/.mom/config.json`:
 { "whisper_model": "~/.mom/models/ggml-large-v3-turbo-q5_0.bin", "llm": "qwen3:14b", "mom_language": "auto" }
 ```
 
+## Icon
+
+The default icon is the dark navy tile (`icon/Minute.icns`); the light alternative is `icon/Minute-light.icns`. Build with it using `ICON=light ./build.sh deploy`.
+
 ## Command line
 
 ```bash

@@ -18,7 +18,7 @@ if [[ "$1" == deploy ]]; then
   mkdir -p ~/Applications ~/.mom/bin
   if [[ -d ~/Applications/Minute.app ]]; then rm -rf ~/.mom/Minute.app.prev; mv ~/Applications/Minute.app ~/.mom/Minute.app.prev; fi
   cp -R "$APP" ~/Applications/
-  cp pipeline/mom ~/.mom/bin/mom; chmod +x ~/.mom/bin/mom
+  cp pipeline/mom ~/.mom/bin/mom; cp pipeline/lexicon_id.txt ~/.mom/bin/lexicon_id.txt; chmod +x ~/.mom/bin/mom
   [[ -f ~/.mom/template.docx ]] || echo "NOTE: put your Word template at ~/.mom/template.docx"
   echo "deployed. previous app kept at ~/.mom/Minute.app.prev"
 fi

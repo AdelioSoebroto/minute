@@ -1,0 +1,417 @@
+# Indonesian names Minute should spell correctly: brands, food and drink, places, institutions, work terms.
+# One per line; "#" starts a heading or comment. Add your own in ~/.mom/terms.txt (same format, or "heard = correct").
+# --- Food & drink brands and restaurants
+Teazzi
+Kopi Kenangan
+Janji Jiwa
+Fore Coffee
+Tomoro Coffee
+Kopi Soe
+Starbucks
+Chatime
+Gong Cha
+Xing Fu Tang
+Mixue
+Es Teh Indonesia
+Teh Poci
+Teh Botol Sosro
+Teh Pucuk Harum
+Fruit Tea
+Aqua
+Le Minerale
+Ultra Milk
+Cimory
+Frisian Flag
+Indomilk
+Indomie
+Mie Sedaap
+Sarimi
+Pop Mie
+ABC
+Kapal Api
+Good Day
+Nescafe
+Torabika
+Luwak White Koffie
+Roma
+Khong Guan
+Oreo
+Chitato
+Taro
+Lays
+Silverqueen
+Beng-Beng
+Pocari Sweat
+Mizone
+Yakult
+Hokben
+Yoshinoya
+Pizza Hut
+KFC
+McDonald's
+Burger King
+Richeese Factory
+Warteg
+Bakmi GM
+Bakso Boedjangan
+Sate Khas Senayan
+Pondok Gede
+Es Teler 77
+Solaria
+Sederhana
+Ayam Geprek Bensu
+Geprek Bensu
+Gindaco
+Dunkin
+J.CO
+Breadtalk
+Holland Bakery
+Sushi Tei
+Sushi Groove
+Din Tai Fung
+Ismaya
+Marugame Udon
+Domino's
+Wendy's
+Es Kopi Tuku
+Tuku
+# --- Retail, e-commerce, apps
+Indomaret
+Alfamart
+Alfagift
+Superindo
+Hypermart
+Transmart
+Lotte Mart
+Giant
+Ranch Market
+Farmers Market
+Tokopedia
+Shopee
+ShopeePay
+Lazada
+Bukalapak
+Blibli
+Zalora
+JD.ID
+Tiket.com
+Traveloka
+Pegipegi
+Gojek
+GoFood
+GoPay
+GoRide
+GoCar
+GoSend
+Grab
+GrabFood
+Maxim
+inDrive
+ShopeeFood
+Bibit
+Ajaib
+Stockbit
+Halodoc
+Alodokter
+Ruangguru
+Zenius
+Kredivo
+Akulaku
+Traveloka
+Sociolla
+Erafone
+iBox
+Matahari
+Ace Hardware
+Informa
+IKEA
+Uniqlo
+Zara
+Erigo
+Eiger
+Polygon
+Wardah
+Emina
+Somethinc
+Scarlett
+Skintific
+Azarine
+Avoskin
+Whitelab
+Mustika Ratu
+Sariayu
+Paragon
+# --- Banks, payments, telco, utilities
+BCA
+BRI
+BNI
+Bank Mandiri
+CIMB Niaga
+Bank Danamon
+Bank Permata
+BTN
+BSI
+Jenius
+Jago
+Blu
+SeaBank
+OVO
+DANA
+LinkAja
+QRIS
+BI-FAST
+Telkomsel
+by.U
+Simpati
+kartuHalo
+IndiHome
+Indosat Ooredoo Hutchison
+IM3
+XL Axiata
+Smartfren
+Telkom Indonesia
+Telkom
+Mitratel
+Telkomsigma
+Pertamina
+Pertamax
+Pertalite
+PLN
+PDAM
+BPJS Kesehatan
+BPJS Ketenagakerjaan
+Garuda Indonesia
+Lion Air
+Batik Air
+Citilink
+Super Air Jet
+AirAsia
+KAI
+Whoosh
+TransJakarta
+MRT Jakarta
+LRT
+KRL
+Commuter Line
+Bluebird
+Gudang Garam
+Djarum
+Sampoerna
+Unilever
+Wings
+Mayora
+Danone
+Nestle
+Astra
+Toyota
+Honda
+Yamaha
+Daihatsu
+Mitsubishi
+Samsung
+Oppo
+Vivo
+Xiaomi
+Realme
+Infinix
+# --- Government, institutions, universities
+Kominfo
+Komdigi
+OJK
+Bank Indonesia
+Kemenkeu
+Kemendikbud
+Kemenkes
+Kemenparekraf
+BUMN
+Danantara
+KPK
+DPR
+BPOM
+Dukcapil
+Polri
+TNI
+UI
+ITB
+UGM
+ITS
+Binus
+Telkom University
+Unpad
+IPB
+# --- Places
+Jakarta
+Jabodetabek
+Bandung
+Surabaya
+Yogyakarta
+Semarang
+Medan
+Makassar
+Denpasar
+Bali
+Malang
+Palembang
+Balikpapan
+Batam
+Tangerang
+Tangerang Selatan
+Bekasi
+Depok
+Bogor
+Sudirman
+Thamrin
+Kuningan
+Rasuna Said
+Gatot Subroto
+SCBD
+Senayan
+Kemang
+Menteng
+Blok M
+Kebayoran
+Tebet
+Pancoran
+Kelapa Gading
+Pluit
+BSD
+Alam Sutera
+PIK
+Grand Indonesia
+Plaza Indonesia
+Pondok Indah Mall
+Kota Kasablanka
+Gandaria City
+Senayan City
+Central Park
+Mal Taman Anggrek
+Lippo Mall Puri
+Telkomsel Smart Office
+Graha Merah Putih
+Wisma Mulia
+Menara Mulia
+# --- Work and business terms in Indonesian offices
+PIC
+SOP
+KPI
+OKR
+RKAP
+Rakor
+Rakerda
+Notulen
+MoM
+BAU
+CR
+Change Request
+UAT
+SIT
+SLA
+MVP
+POC
+ROI
+ROAS
+CTR
+CPM
+CPC
+CPA
+GMV
+MAU
+DAU
+ARPU
+CAC
+LTV
+KOL
+KOC
+Influencer
+Endorse
+Brief
+Briefing
+Deadline
+Follow up
+Escalate
+Eskalasi
+Approval
+Acc
+WFH
+WFO
+WFA
+Hybrid
+THR
+Cuti bersama
+Lembur
+Payroll
+Reimburse
+PO
+PR
+SPK
+BAST
+Invoice
+Faktur pajak
+NPWP
+NIK
+KTP
+PPN
+PPh
+Vendor
+Roadmap
+Sprint
+Backlog
+Stand-up
+Retro
+Kick-off
+Go-live
+Rollback
+Hotfix
+Downtime
+# --- Greetings, honorifics and common first names (spelling reference)
+Bapak
+Ibu
+Pak
+Bu
+Mas
+Mbak
+Kak
+Bang
+Dek
+Mas Budi
+Mbak Siti
+Budi
+Siti
+Agus
+Dewi
+Rizky
+Andi
+Eko
+Dian
+Rina
+Putri
+Wahyu
+Fajar
+Dimas
+Bayu
+Ayu
+Nita
+Yudi
+Hendra
+Rudi
+Ratna
+Sri
+Joko
+Bambang
+Slamet
+Ahmad
+Muhammad
+Aditya
+Reza
+Rahmat
+Fitri
+Indah
+Lestari
+Santoso
+Wijaya
+Kusuma
+Pratama
+Saputra
+Hidayat
+Nugroho
+Setiawan

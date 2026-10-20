@@ -103,3 +103,9 @@ Recording a meeting needs the participants' consent and may be restricted by com
 ## Transcript step
 
 Recording is now four steps: **Record, Transcript, Minutes, Export**. After the recording is transcribed on the Mac, the transcript opens for checking before any minutes are written: timestamps (click to play the audio from that line), You/Others labels, search, copy, edit any word, remove lines. "Write minutes" then drafts from the corrected text (`mom --draft folder`); "Skip this step next time" goes straight on. Whisper's invented text on quiet audio (credit lines, "thanks for watching") is filtered, and minutes never come back with an empty topic list (a fallback pass lists what was said even for talks with no decisions).
+
+## Past meetings and names
+
+- **Past meetings** open with the transcript on the left and the minutes on the right, both editable and saved automatically a moment after each change. Remove a misheard line, fix a word, press **Rewrite minutes** to redraft from the corrected transcript, **Tidy up**, or **Export again**. Narrow windows switch to one pane (Both / Minutes / Transcript).
+- **Indonesian names.** `pipeline/lexicon_id.txt` ships about 400 brands, restaurants, shops, apps, banks, places, institutions and office terms. After transcription the local model swaps only words that are clearly misheard versions of those names (judged by sound and context: "TZ" about a tea drink becomes Teazzi, "indo maret" becomes Indomaret), and the minutes prompt carries the same list as spelling reference.
+- **Learning.** Words you fix in a transcript are remembered in `~/.mom/corrections.txt` and applied to future transcripts. Add your own names in Settings > Names & terms (`~/.mom/terms.txt`; `heard = correct` forces a spelling).

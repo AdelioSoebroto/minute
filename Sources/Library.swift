@@ -358,11 +358,7 @@ struct LibraryView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var selection: URL?
     @State private var query = ""
-    @State private var tab = 0
     @State private var confirmDelete: Meeting?
-    @State private var question = ""
-    @State private var answer = ""
-    @State private var asking = false
 
     var filtered: [Meeting] {
         guard !query.isEmpty else { return lib.meetings }
@@ -411,7 +407,7 @@ struct LibraryView: View {
             if let m = lib.meetings.first(where: { $0.id == selection }) { detail(m) }
             else { ContentUnavailableView("Select a meeting", systemImage: "doc.text.magnifyingglass", description: Text("Its minutes and transcript appear here.")) }
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 1260, minHeight: 640)
         .onAppear {
             lib.refresh(); if selection == nil { selection = lib.meetings.first?.id }
             AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
@@ -439,84 +435,7 @@ struct LibraryView: View {
     }
 
     @ViewBuilder func detail(_ m: Meeting) -> some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(m.title).font(.title2.weight(.semibold)).lineLimit(2)
-                    Text("\(m.date.formatted(date: .complete, time: .shortened)) · \(m.status)").font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Picker("", selection: $tab) { Text("Minutes").tag(0); Text("Transcript").tag(1) }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 190)
-            }.padding(.horizontal, 24).padding(.vertical, 14)
-            Divider()
-            Group {
-                if tab == 0 { minutes(m) } else { VStack(spacing: 0) { TranscriptView(text: m.transcript, query: query); if !m.transcript.isEmpty { askBar(m) } } }
-            }
-            Divider()
-            GlassGroup(spacing: 12) { HStack(spacing: 10) {
-                if m.hasDocx { Button { if let f = exportedFile(in: m.dir, ext: "docx") { NSWorkspace.shared.open(f) } } label: { Label("Word", systemImage: "doc.text") }.glassButton() }
-                if m.hasPdf { Button { if let f = exportedFile(in: m.dir, ext: "pdf") { NSWorkspace.shared.open(f) } } label: { Label("PDF", systemImage: "doc.richtext") }.glassButton() }
-                Button { NSWorkspace.shared.activateFileViewerSelecting([m.dir]) } label: { Label("Finder", systemImage: "folder") }.glassButton()
-                Spacer()
-                Button(role: .destructive) { confirmDelete = m } label: { Label("Delete", systemImage: "trash") }.glassButton()
-                if m.data != nil {
-                    Button { edit(m) } label: { Text(m.hasPdf ? "Edit & re-export" : "Review & export") }
-                        .glassButton(prominent: true).disabled(r.isBusy || r.isRecording)
-                }
-            } }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12)
-        }
-        .id(m.id)
-        .onChange(of: selection) { _, _ in answer = ""; question = "" }
-    }
-
-    func askBar(_ m: Meeting) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !answer.isEmpty || asking {
-                Group { if asking { HStack { ProgressView().controlSize(.small); Text("Thinking…").foregroundStyle(.secondary) } } else { Text(answer).textSelection(.enabled) } }
-                    .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .glass(RoundedRectangle(cornerRadius: 16))
-            }
-            HStack {
-                Image(systemName: "sparkles").foregroundStyle(.secondary)
-                TextField("Ask about this meeting…", text: $question).textFieldStyle(.plain).onSubmit { ask(m) }
-                if !question.isEmpty { Button { ask(m) } label: { Image(systemName: "arrow.up.circle.fill") }.buttonStyle(.borderless).disabled(asking) }
-            }.padding(.horizontal, 14).padding(.vertical, 10).glass(Capsule(), interactive: true)
-        }.padding(.horizontal, 20).padding(.vertical, 12)
-    }
-
-    func ask(_ m: Meeting) {
-        let q = question.trimmingCharacters(in: .whitespaces); guard !q.isEmpty, !asking else { return }
-        asking = true; answer = ""
-        Task {
-            let (code, out) = await runMom(["--ask", m.dir.path, q], full: true)
-            answer = code == 0 ? out : "Couldn't answer: \(out)"
-            asking = false
-        }
-    }
-
-    @ViewBuilder func minutes(_ m: Meeting) -> some View {
-        if let d = m.data {
-            PaperDesk {
-                MinutesPaper(agenda: .constant(d.agenda), date: .constant(d.date), time: .constant(d.time),
-                             telkNames: .constant(d.telkomsel_names.joined(separator: "\n")), telkUnit: .constant(d.telkomsel_unit),
-                             tpNames: .constant(d.third_party_names.joined(separator: "\n")), tpCompany: .constant(d.third_party_company),
-                             topics: .constant(d.topics.map { Topic(text: $0) }), editable: false)
-            }
-        } else {
-            VStack(spacing: 12) {
-                ContentUnavailableView("No minutes yet", systemImage: "doc.badge.ellipsis",
-                                       description: Text(m.transcript.isEmpty ? "Only the recording was saved." : "The transcript is ready; the minutes were not drafted."))
-                Button("Draft minutes") { r.draft(m.dir); openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(r.isBusy || r.isRecording || !FileManager.default.fileExists(atPath: m.dir.appendingPathComponent("mic.caf").path))
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    func edit(_ m: Meeting) {
-        guard r.loadDraft(m.dir) else { return }
-        r.phase = .review
-        openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true)
+        MeetingWorkspace(meeting: m, lib: lib, r: r) { confirmDelete = m }
+            .id(m.id)
     }
 }

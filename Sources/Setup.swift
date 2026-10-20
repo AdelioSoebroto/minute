@@ -318,6 +318,7 @@ struct SettingsView: View {
     @State private var deleteAudio = Storage.deleteAudio
     @State private var count = Storage.meetingFolders(in: Storage.root).count
     @State private var tplVersion = 0
+    @State private var terms = (try? String(contentsOf: home.appendingPathComponent(".mom/terms.txt"), encoding: .utf8)) ?? ""
 
     var changed: Bool { choice.standardizedFileURL.path != Storage.root.standardizedFileURL.path }
 
@@ -360,6 +361,14 @@ struct SettingsView: View {
             Section { HardwareStep() } header: { Text("This Mac") }
 
             Section {
+                TextEditor(text: $terms).font(.system(.callout, design: .monospaced)).frame(height: 110)
+                    .scrollContentBackground(.hidden).padding(6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                    .onChange(of: terms) { _, v in try? v.write(to: home.appendingPathComponent(".mom/terms.txt"), atomically: true, encoding: .utf8) }
+                Text("Minute already knows common Indonesian brands, restaurants, places and work terms, and learns from the words you fix in a transcript. Add your own here, one per line, for example a client, a product or a cafe. To force a spelling write: heard = correct").font(.caption).foregroundStyle(.secondary)
+            } header: { Text("Names & terms") }
+
+            Section {
                 Toggle("Delete recordings after the minutes are exported", isOn: $deleteAudio)
                     .onChange(of: deleteAudio) { _, v in Storage.deleteAudio = v }
                 Text("Keeps the transcript and minutes only. Useful when the folder syncs to the cloud.").font(.caption).foregroundStyle(.secondary)
@@ -369,7 +378,7 @@ struct SettingsView: View {
                 Button("Run Setup Again…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
             } header: { Text("Setup") }
         }
-        .formStyle(.grouped).frame(width: 560, height: 760)
+        .formStyle(.grouped).frame(width: 560, height: 820)
         .onAppear { choice = Storage.root; count = Storage.meetingFolders(in: Storage.root).count }
     }
 }

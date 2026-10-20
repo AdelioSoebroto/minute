@@ -70,99 +70,107 @@ final class Playback: ObservableObject {
     }
 }
 
-// MARK: - Step 2: check what was heard
+// MARK: - The transcript list: search, play, edit, remove (used by the recording flow and by past meetings)
 
-struct StepTranscript: View {
-    @ObservedObject var r: Recorder
+struct TranscriptPane: View {
+    @Binding var lines: [TLine]
+    let dir: URL?
     @StateObject private var playback = Playback()
     @State private var query = ""
     @State private var copied = false
 
-    private var words: Int { r.tLines.reduce(0) { $0 + $1.text.split(separator: " ").count } }
+    private var words: Int { lines.reduce(0) { $0 + $1.text.split(separator: " ").count } }
     private func tint(_ who: String) -> Color { who == "Me" ? .blue : who == "Others" ? .orange : .gray }
     private func matches(_ l: TLine) -> Bool { query.isEmpty || l.text.localizedCaseInsensitiveContains(query) || l.speaker.localizedCaseInsensitiveContains(query) }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            if r.tLines.isEmpty {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search the transcript", text: $query).textStyle()
+                    if !query.isEmpty {
+                        Text("\(lines.filter(matches).count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7).glass(Capsule())
+                Text("\(words) words").font(.caption).foregroundStyle(.secondary).fixedSize()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(TLine.serialize(lines), forType: .string)
+                    Haptic.tick(); copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }.glassButton().help("Copy the transcript")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            if lines.isEmpty {
                 ContentUnavailableView("Nothing was heard", systemImage: "waveform.slash",
                                        description: Text("The recording had no speech Minute could pick up. Check the microphone, and for online meetings that the meeting audio was playing."))
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach($r.tLines) { $l in
-                            row($l)
-                        }
-                    }.padding(.horizontal, 24).padding(.vertical, 12).frame(maxWidth: 760).frame(maxWidth: .infinity)
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach($lines) { $l in row($l) }
+                    }.padding(.horizontal, 10).padding(.vertical, 6)
                 }
                 .softScrollEdges()
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .onDisappear { playback.stop() }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Check what was heard").font(.title2.weight(.semibold))
-            Text("This is the transcript the minutes are written from. Fix any word that was misheard, remove lines that are not part of the meeting, then write the minutes.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search the transcript", text: $query).textFieldStyle(.plain)
-                    if !query.isEmpty {
-                        Text("\(r.tLines.filter(matches).count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8).glass(Capsule())
-                chip("\(words) words")
-                chip("\(r.tLines.count) lines")
-                Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(TLine.serialize(r.tLines), forType: .string)
-                    Haptic.tick(); copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                } label: { Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") }.glassButton()
-            }
-        }
-        .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 10).frame(maxWidth: 760 + 48).frame(maxWidth: .infinity)
-    }
-
-    private func chip(_ s: String) -> some View {
-        Text(s).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 6).glass(Capsule())
-    }
+    func stopPlayback() { playback.stop() }
 
     private func row(_ l: Binding<TLine>) -> some View {
         let line = l.wrappedValue
-        let idx = r.tLines.firstIndex { $0.id == line.id } ?? 0
-        let next = idx + 1 < r.tLines.count ? r.tLines[idx + 1] : nil
-        let canPlay = Playback.available(in: r.session)
-        return HStack(alignment: .top, spacing: 10) {
-            Button { Haptic.tick(); playback.toggle(line, next: next, in: r.session) } label: {
+        let idx = lines.firstIndex { $0.id == line.id } ?? 0
+        let next = idx + 1 < lines.count ? lines[idx + 1] : nil
+        let canPlay = Playback.available(in: dir)
+        return HStack(alignment: .top, spacing: 8) {
+            Button { Haptic.tick(); playback.toggle(line, next: next, in: dir) } label: {
                 HStack(spacing: 4) {
                     Image(systemName: playback.playingID == line.id ? "pause.fill" : "play.fill").font(.system(size: 9))
                     Text(line.time).font(.caption.monospacedDigit())
                 }
                 .foregroundStyle(playback.playingID == line.id ? Color.accentColor : .secondary)
-                .frame(width: 74, alignment: .leading)
+                .frame(width: 70, alignment: .leading)
             }
             .buttonStyle(.plain).disabled(!canPlay).help(canPlay ? "Play from here" : "")
             Text(line.speaker).font(.caption.weight(.semibold)).foregroundStyle(tint(line.who))
-                .padding(.horizontal, 8).padding(.vertical, 2).background(Capsule().fill(tint(line.who).opacity(0.12)))
-                .frame(width: 66, alignment: .leading)
-            TextField("", text: l.text, axis: .vertical).textFieldStyle(.plain).font(.body)
-            Button { Haptic.tick(); withAnimation(.spring(duration: 0.3)) { r.tLines.removeAll { $0.id == line.id } } } label: {
+                .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(tint(line.who).opacity(0.12)))
+                .frame(width: 58, alignment: .leading)
+            TextField("", text: l.text, axis: .vertical).textStyle().font(.callout)
+            Button { Haptic.tick(); withAnimation(.spring(duration: 0.3)) { lines.removeAll { $0.id == line.id } } } label: {
                 Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
             }.buttonStyle(.borderless).help("Remove this line")
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.horizontal, 10).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(playback.playingID == line.id ? Color.accentColor.opacity(0.10) : (query.isEmpty || !matches(line) ? Color.clear : Color.yellow.opacity(0.22))))
         .opacity(matches(line) ? 1 : 0.35)
+    }
+}
+
+private extension View {
+    func textStyle() -> some View { self.textFieldStyle(.plain) }
+}
+
+// MARK: - Step 2: check what was heard
+
+struct StepTranscript: View {
+    @ObservedObject var r: Recorder
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Check what was heard").font(.title2.weight(.semibold))
+                Text("This is the transcript the minutes are written from. Fix any word that was misheard, remove lines that are not part of the meeting, then write the minutes.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 4).frame(maxWidth: 760 + 48, alignment: .leading).frame(maxWidth: .infinity)
+            TranscriptPane(lines: $r.tLines, dir: r.session).frame(maxWidth: 760 + 48)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     }
 
     private var footer: some View {
@@ -172,7 +180,7 @@ struct StepTranscript: View {
                 Spacer(minLength: 8)
                 Toggle("Skip this step next time", isOn: $r.autoDraft).toggleStyle(.checkbox).font(.callout).foregroundStyle(.secondary)
                     .padding(.horizontal, 12).padding(.vertical, 8).glass(Capsule())
-                Button { playback.stop(); r.writeMinutes() } label: { Text("Write minutes").frame(minWidth: 140) }
+                Button { r.writeMinutes() } label: { Text("Write minutes").frame(minWidth: 140) }
                     .glassButton(prominent: true).keyboardShortcut(.defaultAction).disabled(r.tLines.isEmpty)
             }
             .controlSize(.large)

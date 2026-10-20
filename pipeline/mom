@@ -157,6 +157,93 @@ def learn_terms(data):
     add = [n for n in new if n and n.lower() not in low]
     if add: GLOSS.write_text("\n".join(have + add) + "\n")
 
+# ---------- names the transcript must spell right: built-in Indonesian lexicon + the user's own terms + corrections learned from their edits ----------
+USER_TERMS = HOME / ".mom/terms.txt"             # the user's own brands/names; plain lines, or "heard = correct"
+LEARNED = HOME / ".mom/corrections.txt"          # filled automatically from the user's transcript edits
+
+def _term_files():
+    here = Path(__file__).resolve().parent
+    return [p for p in (here / "lexicon_id.txt", HOME / ".mom/lexicon_id.txt", USER_TERMS) if p.exists()]
+
+def lexicon():
+    seen, out = set(), []
+    for f in _term_files():
+        for l in f.read_text().splitlines():
+            l = l.strip()
+            if not l or l.startswith("#") or "=" in l: continue
+            if l.lower() not in seen: seen.add(l.lower()); out.append(l)
+    return out
+
+def corrections():
+    """heard -> correct, from the user's terms file and from edits they made to earlier transcripts."""
+    out = {}
+    for f in (USER_TERMS, LEARNED):
+        if not f.exists(): continue
+        for l in f.read_text().splitlines():
+            if "=" in l and not l.strip().startswith("#"):
+                a, b = (x.strip() for x in l.split("=", 1))
+                if a and b: out[a] = b
+    return out
+
+def apply_corrections(text, mapping=None):
+    mapping = corrections() if mapping is None else mapping
+    for heard in sorted(mapping, key=len, reverse=True):
+        flags = re.I if len(heard) >= 4 else 0       # short acronyms (TZ) only match as typed
+        text = re.sub(r"(?<!\w)" + re.escape(heard) + r"(?!\w)", mapping[heard].replace("\\", "\\\\"), text, flags=flags)
+    return text
+
+TERMS_SCHEMA = {"type": "object", "required": ["replacements"], "properties": {"replacements": {"type": "array", "items": {
+    "type": "object", "required": ["heard", "correct"], "properties": {"heard": {"type": "string"}, "correct": {"type": "string"}}}}}}
+
+def fix_terms(transcript):
+    """Ask the local model which words in the transcript are misheard brands, restaurants or places from the lexicon; apply only safe, verbatim swaps."""
+    lex = lexicon()
+    if not lex: return transcript
+    stage("Checking names and brands")
+    out = json.loads(chat(
+        "You fix misheard proper nouns in a speech-to-text transcript that mixes English and Bahasa Indonesia (formal and slang). You get a list of KNOWN NAMES: brands, restaurants, shops, apps, banks, places, institutions and work terms common in Indonesia. "
+        "Return the replacements needed where a word or short phrase in the transcript is clearly a misheard or misspelled version of a known name, judged by how it sounds and by the context (for example 'TZ' or 'tizi' said about a tea drink means 'Teazzi'; 'indo maret' means 'Indomaret'; 'tokped' is slang, leave it). "
+        "'heard' must appear in the transcript exactly as written. 'correct' must be copied exactly from the list. Do not touch ordinary words, people's names, or anything you are not sure about. Return an empty list if nothing needs fixing.",
+        "KNOWN NAMES: " + "; ".join(lex)[:4500] + "\n\nTRANSCRIPT:\n" + transcript, TERMS_SCHEMA))
+    canon = {x.lower(): x for x in lex}
+    pairs = {}
+    for r in out.get("replacements", [])[:12]:
+        h, c = (r.get("heard") or "").strip(), canon.get((r.get("correct") or "").strip().lower())
+        if c and len(h) >= 2 and h != c and re.search(r"(?<!\w)" + re.escape(h) + r"(?!\w)", transcript): pairs[h] = c
+    if pairs: log("name fixes: " + json.dumps(pairs, ensure_ascii=False))
+    return apply_corrections(transcript, pairs) if pairs else transcript
+
+def learn_from_edits(d: Path):
+    """Compare the transcript as heard with what the user corrected it to; remember word swaps so the next transcript gets them right."""
+    import difflib
+    orig, cur = d / "transcript.orig.md", d / "transcript.md"
+    if not orig.exists() or not cur.exists(): return
+    def lines(f):
+        out = {}
+        for l in f.read_text().splitlines():
+            m = re.match(r"(\[[\d:]+\] [^:]+): (.*)", l)
+            if m: out[m.group(1)] = m.group(2)
+        return out
+    a, b = lines(orig), lines(cur)
+    strip = lambda w: w.strip(".,;:!?\"'()[]")
+    known = corrections(); new = {}
+    for k, old in a.items():
+        if k not in b or b[k] == old: continue
+        ow, nw = old.split(), b[k].split()
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, ow, nw, autojunk=False).get_opcodes():
+            if op != "replace" or i2 - i1 > 2 or j2 - j1 > 2: continue
+            heard, correct = strip(" ".join(ow[i1:i2])), strip(" ".join(nw[j1:j2]))
+            if len(heard) < 2 or not correct or heard.lower() == correct.lower() or heard.isdigit() or correct.isdigit(): continue
+            if heard not in known: new[heard] = correct
+    if new:
+        with open(LEARNED, "a") as f:
+            for h, c in list(new.items())[:20]: f.write(f"{h} = {c}\n")
+        have = {g.lower() for g in glossary()}
+        add = [c for c in new.values() if c.lower() not in have]
+        if add: GLOSS.write_text("\n".join(glossary() + add) + "\n")
+        log("learned corrections: " + json.dumps(new, ensure_ascii=False))
+    orig.write_text(cur.read_text())
+
 def whisper_prompt():
     terms = ", ".join(glossary()[-40:])
     base = ("Meeting in English and Bahasa Indonesia, formal and casual, switching between them. "
@@ -460,6 +547,8 @@ def make_mom(transcript: str, session: Path):
     if mine: ex += "\nMore examples from this user's earlier minutes (match their wording):\n" + mine
     tp = template_profile()
     system = SYSTEM.format(lang=lang, examples=ex, me=CFG["my_name"] or "the user", team=tp["team"], internal=tp["internal"])
+    lex = lexicon()
+    if lex: system += "\nCommon Indonesian names (brands, restaurants, shops, banks, places, institutions), SPELLING REFERENCE ONLY: if the transcript has an unfamiliar word or acronym that clearly refers to one of these (by sound and context), write it as listed. Never add a name that was not mentioned. " + "; ".join(lex)[:3500]
     gl = glossary()
     if gl: system += "\nKnown names and terms, SPELLING REFERENCE ONLY (use these spellings when the transcript has a similar-sounding word). These people and terms are NOT necessarily in this meeting: never add anyone to the attendee lists unless the transcript mentions them: " + "; ".join(gl[-80:])
     if len(transcript) > (profile()["ctx_cap"] - 5000) * 2.8:  # map-reduce for very long meetings
@@ -1009,6 +1098,7 @@ def main():
         return
     if args[0] == "--draft":
         d = Path(args[1]).expanduser().resolve()
+        learn_from_edits(d)
         transcript = re.sub(r"^# Transcript\s*", "", (d / "transcript.md").read_text()).strip()
         if len(transcript) < 20: raise SystemExit("The transcript is empty. Add some text first.")
         ensure_ollama()
@@ -1039,8 +1129,14 @@ def main():
         if prev and prev[0] == who and s - prev[1] < 2.5 and not re.search(r"[.!?…][\"')]*$", lines[-1]) and len(lines[-1]) < 220: lines[-1] += " " + text
         else: lines.append(f"[{ts(s)}] {who}: {text}")
         prev = (who, s + 1)
-    transcript = "\n".join(lines)
+    transcript = apply_corrections("\n".join(lines))
+    if len(transcript) >= 80:
+        try:
+            ensure_ollama(); transcript = fix_terms(transcript)
+        except (Exception, SystemExit) as e:
+            log("name check skipped: " + repr(e))
     (d / "transcript.md").write_text("# Transcript\n\n" + transcript + "\n")
+    (d / "transcript.orig.md").write_text("# Transcript\n\n" + transcript + "\n")
     if len(transcript) < 80: raise SystemExit("Transcript is nearly empty. Check microphone / meeting audio levels.")
     if "--transcript-only" in args:
         print("DONE", d, flush=True); return

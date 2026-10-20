@@ -863,7 +863,7 @@ struct MinuteApp: App {
 
         Window("Minute", id: "library") { LibraryView(lib: lib, r: r) }
             .windowToolbarStyle(.unified)
-            .defaultSize(width: 1040, height: 700)
+            .defaultSize(width: 1440, height: 860)
 
         Window("New Minutes", id: "minute") { MainWindow(r: r) }
             .windowResizability(.contentMinSize)

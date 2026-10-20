@@ -170,5 +170,32 @@ class TranscriptCleanup(unittest.TestCase):
         self.assertTrue(all(a[0] < b[0] for a, b in zip(out, out[1:])))
 
 
+class Names(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.t = Path(tempfile.mkdtemp())
+        self.old = (m.HOME, m.USER_TERMS, m.LEARNED, m.GLOSS)
+        m.HOME = self.t; m.USER_TERMS = self.t / "terms.txt"; m.LEARNED = self.t / "corrections.txt"; m.GLOSS = self.t / "glossary.txt"
+    def tearDown(self):
+        m.HOME, m.USER_TERMS, m.LEARNED, m.GLOSS = self.old
+    def test_lexicon_has_brands_places_and_user_terms(self):
+        m.USER_TERMS.write_text("Kopi Anjing\nbakso = Bakso Pak Kumis\n")
+        lex = m.lexicon()
+        for want in ("Teazzi", "Indomaret", "Kopi Kenangan", "Sudirman", "Kopi Anjing"): self.assertIn(want, lex)
+        self.assertNotIn("bakso = Bakso Pak Kumis", lex)
+    def test_apply_corrections(self):
+        self.assertEqual(m.apply_corrections("kasih TZ ya, tz kecil, ATZ", {"TZ": "Teazzi"}), "kasih Teazzi ya, tz kecil, ATZ")
+        self.assertEqual(m.apply_corrections("ke indo maret dulu", {"Indo Maret": "Indomaret"}), "ke Indomaret dulu")
+    def test_learns_word_swaps_from_user_edits(self):
+        d = self.t / "m"; d.mkdir()
+        (d / "transcript.orig.md").write_text("# Transcript\n\n[00:00:01] Me: Kita kasih TZ ya sama pak Budi\n[00:00:09] Me: Okay lanjut\n")
+        (d / "transcript.md").write_text("# Transcript\n\n[00:00:01] Me: Kita kasih Teazzi ya sama Pak Budi\n[00:00:09] Me: Okay lanjut\n")
+        m.learn_from_edits(d)
+        self.assertEqual(m.corrections().get("TZ"), "Teazzi")
+        self.assertNotIn("pak", " ".join(m.corrections()).lower())       # case-only change is not a correction
+        self.assertIn("Teazzi", m.glossary())
+        self.assertEqual(m.apply_corrections("kasih TZ lagi"), "kasih Teazzi lagi")
+
+
 if __name__ == "__main__":
     unittest.main()

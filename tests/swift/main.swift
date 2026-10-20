@@ -47,5 +47,8 @@ check(ActionItems.dueDate("23 Oktober", reference: ref) == dc.date(from: DateCom
 check(ActionItems.dueDate("TBD", reference: ref) == nil && ActionItems.dueDate("setiap Senin", reference: ref) == nil, "due: no date")
 check(ActionItems.isOverdue(due: "1 Januari 2020") && !ActionItems.isOverdue(due: "TBD"), "overdue")
 
+check(ActionItems.dueDate("2026-10-23", reference: ref) == dc.date(from: DateComponents(year: 2026, month: 10, day: 23)), "due: ISO date")
+check(ActionItems.niceDue("2026-10-23") == "23 Oct 2026" && ActionItems.niceDue("TBD") == "TBD", "nice due")
+
 print(failures == 0 ? "swift tests passed" : "\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

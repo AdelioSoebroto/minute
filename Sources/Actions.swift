@@ -83,7 +83,7 @@ struct OpenItemsView: View {
                                         if !i.owner.isEmpty || !i.due.isEmpty {
                                             HStack(spacing: 8) {
                                                 if !i.owner.isEmpty { Label(i.owner, systemImage: "person.fill") }
-                                                if !i.due.isEmpty { Label(i.due, systemImage: "calendar") }
+                                                if !i.due.isEmpty { Label(ActionItems.niceDue(i.due), systemImage: "calendar") }
                                             }.font(.caption).foregroundStyle(!tracker.isDone(i) && ActionItems.isOverdue(due: i.due) ? Color.red : .secondary)
                                         }
                                     }

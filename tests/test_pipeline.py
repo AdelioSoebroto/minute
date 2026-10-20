@@ -217,6 +217,18 @@ class Names(unittest.TestCase):
         self.assertEqual(m.apply_corrections("kasih TZ lagi"), "kasih Teazzi lagi")
 
 
+class Analysis(unittest.TestCase):
+    def test_analysis_prompt_builds_in_both_languages(self):
+        seen = []
+        orig = m.chat; m.chat = lambda system, user, schema=None: (seen.append(system) or '{"summary":"","decisions":[],"action_items":[],"open_questions":[]}')
+        try:
+            for lang in ("id", "en", "auto"):
+                m.CFG["mom_language"] = lang; m.analyse("[00:00:01] Me: halo", "meta")
+        finally:
+            m.chat = orig; m.CFG["mom_language"] = "auto"
+        self.assertIn("formal English", seen[1]); self.assertIn("formal Bahasa Indonesia", seen[0])
+
+
 class Context(unittest.TestCase):
     def test_calendar_and_screen_text_reach_the_prompt(self):
         import tempfile

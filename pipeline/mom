@@ -742,7 +742,7 @@ def analyse(transcript: str, meta: str):
               "- Convert relative dates (besok, lusa, minggu depan, nanti sore) to absolute dates using the meeting date given; if unclear write 'TBD'.\n"
               "- decisions: only what was actually agreed. action_items: concrete tasks with owner and due. open_questions: unresolved points.\n"
               "- informal_terms: any slang you had to interpret, as 'said = meaning'.\n"
-              "- summary: 2-3 plain sentences of what the meeting was about.\n"
+              "- summary: 2-3 plain sentences of what the meeting was about.\n" +
               ("Write in formal English. Never invent facts." if CFG["mom_language"] == "en" else "Write in formal Bahasa Indonesia (keep English technical terms). Never invent facts."))
     return json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}", ANALYSIS_SCHEMA))
 

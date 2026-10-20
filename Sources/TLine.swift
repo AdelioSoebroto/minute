@@ -117,6 +117,10 @@ extension ActionItems {
 
     /// "Friday, October 23rd, 2026", "23 Oktober 2026" or "23 Oktober" (year taken from `reference`) -> a date; "TBD" and the like -> nil.
     static func dueDate(_ text: String, reference: Date = Date()) -> Date? {
+        if let r = text.range(of: #"\b(\d{4})-(\d{1,2})-(\d{1,2})\b"#, options: .regularExpression) {      // 2026-10-23
+            let p = text[r].split(separator: "-").compactMap { Int($0) }
+            if p.count == 3, let d = Calendar(identifier: .gregorian).date(from: DateComponents(year: p[0], month: p[1], day: p[2])) { return d }
+        }
         let words = text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
         var day: Int?, month: Int?, year: Int?
         for w in words {
@@ -128,6 +132,12 @@ extension ActionItems {
         var cal = Calendar(identifier: .gregorian); cal.timeZone = .current
         let y = year ?? cal.component(.year, from: reference)
         return cal.date(from: DateComponents(year: y, month: m, day: d))
+    }
+
+    /// "2026-10-23" -> "23 Oct 2026" for display; anything else is shown as written.
+    static func niceDue(_ text: String) -> String {
+        guard text.range(of: #"^\d{4}-\d{1,2}-\d{1,2}$"#, options: .regularExpression) != nil, let d = dueDate(text) else { return text }
+        let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; return f.string(from: d)
     }
 
     static func isOverdue(due: String, now: Date = Date()) -> Bool {

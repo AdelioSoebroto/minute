@@ -226,6 +226,13 @@ class Context(unittest.TestCase):
         self.assertIn("Weekly Sync Ads", c); self.assertIn("Budi", c); self.assertIn("[00:01:15]", c); self.assertIn("IDR 450 juta", c)
         self.assertEqual(len(m.screen_events(d)), 1)
         self.assertIn("Teazzi", m.screen_terms(d))
+    def test_user_flags_reach_the_prompt_with_what_was_said(self):
+        import tempfile
+        d = Path(tempfile.mkdtemp())
+        (d / "transcript.md").write_text("# Transcript\n\n[00:00:10] Me: Selamat pagi.\n[00:01:00] Others: Dewi akan kirim kontrak ke vendor.\n[00:05:00] Me: Lanjut.\n")
+        (d / "marks.json").write_text(json.dumps([{"t": 65, "kind": "action"}]))
+        c = m.context_block(d)
+        self.assertIn("ACTION", c); self.assertIn("[00:01:05]", c); self.assertIn("kirim kontrak", c); self.assertNotIn("Lanjut", c)
     def test_no_context_files_is_fine(self):
         import tempfile
         self.assertEqual(m.context_block(Path(tempfile.mkdtemp())), "")

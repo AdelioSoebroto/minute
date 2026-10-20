@@ -100,6 +100,8 @@ final class Recorder: ObservableObject {
     @Published var transcript = ""
     @Published var tLines: [TLine] = []
     @Published var screenEvents: [ScreenEvent] = []
+    @Published var marks: [Mark] = []
+    @Published var markFlash: MarkKind?
     @Published var workTitle = "Transcribing the recording"
     @Published var autoDraft: Bool = UserDefaults.standard.bool(forKey: "autoDraft") { didSet { UserDefaults.standard.set(autoDraft, forKey: "autoDraft") } }
     @Published var lastDir: URL? = Recorder.latestSession()
@@ -209,7 +211,7 @@ final class Recorder: ObservableObject {
             phase = .failed(error.localizedDescription); return
         }
         session = dir
-        started = Date(); elapsed = 0; tick = 0
+        started = Date(); elapsed = 0; tick = 0; marks = []
         history = Array(repeating: 0, count: 36)
         Recovery.markStarted(dir)
         CalendarContext.writeContext(for: started, into: dir)
@@ -285,6 +287,14 @@ final class Recorder: ObservableObject {
         }
     }
 
+    /// Drops a flag at this moment; the minutes writer is told that what was said just before it matters.
+    func addMark(_ kind: MarkKind) {
+        guard isRecording, let dir = session else { return }
+        marks.append(Mark(t: Int(elapsed), kind: kind)); Mark.save(marks, to: dir)
+        Haptic.confirm(); markFlash = kind
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in if self?.markFlash == kind { self?.markFlash = nil } }
+    }
+
     func stop() {
         guard isRecording, let dir = session else { return }
         timer?.invalidate(); timer = nil
@@ -323,7 +333,7 @@ final class Recorder: ObservableObject {
         session = dir
         transcript = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
         tLines = TLine.parse(transcript)
-        screenEvents = ScreenEvent.load(from: dir)
+        screenEvents = ScreenEvent.load(from: dir); marks = Mark.load(from: dir)
     }
 
     /// Step 2 to 3: save the (possibly corrected) transcript and write the minutes from it.
@@ -655,6 +665,12 @@ struct PanelView: View {
                 Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
                     .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
             }
+            HStack(spacing: 8) {
+                ForEach(MarkKind.allCases, id: \.self) { k in
+                    Button { r.addMark(k) } label: { Label(k.label, systemImage: r.markFlash == k ? "checkmark" : k.symbol).font(.caption) }
+                        .buttonStyle(.bordered).controlSize(.small).tint(k.tint).help("Flag this moment as \(k.label.lowercased()) (⌃⌥\(k.hotkey) from any app)")
+                }
+            }
             HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5) { r.stop(); showWindow() }
         }
     }
@@ -961,6 +977,9 @@ struct MinuteApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(r.isBusy)
                 Divider()
                 Button("All Meetings") { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }.keyboardShortcut("l", modifiers: .command)
+                Menu("Flag This Moment") {
+                    ForEach(MarkKind.allCases, id: \.self) { k in Button(k.label) { r.addMark(k) } }
+                }.disabled(!r.isRecording)
                 Button("Current Recording") { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }.keyboardShortcut("0", modifiers: .command)
             }
             CommandGroup(after: .help) {

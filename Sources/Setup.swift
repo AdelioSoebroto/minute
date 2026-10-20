@@ -24,6 +24,11 @@ enum Storage {
         set { UserDefaults.standard.set(newValue, forKey: "deleteAudio"); writeConfig(["delete_audio": newValue]) }
     }
 
+    static func configValue(_ key: String) -> Any? {
+        let url = home.appendingPathComponent(".mom/config.json")
+        return ((try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any])?[key]
+    }
+
     /// The pipeline reads the same settings from ~/.mom/config.json.
     static func writeConfig(_ patch: [String: Any]) {
         let url = home.appendingPathComponent(".mom/config.json")
@@ -396,6 +401,8 @@ struct SettingsView: View {
     @State private var readScreens = ScreenContext.enabled
     @State private var thumbs = ScreenContext.keepThumbnails
     @State private var useCalendar = CalendarContext.enabled
+    @State private var language = (Storage.configValue("mom_language") as? String) ?? "auto"
+    @State private var backup = BackupJob()
     @State private var terms = (try? String(contentsOf: home.appendingPathComponent(".mom/terms.txt"), encoding: .utf8)) ?? ""
 
     var changed: Bool { choice.standardizedFileURL.path != Storage.root.standardizedFileURL.path }
@@ -436,6 +443,23 @@ struct SettingsView: View {
                 TemplatePicker { tplVersion += 1 }.id(tplVersion)
             } header: { Text("Template") }
 
+            Section {
+                Picker("Write the minutes in", selection: $language) {
+                    Text("The language of the meeting").tag("auto"); Text("Bahasa Indonesia").tag("id"); Text("English").tag("en")
+                }.onChange(of: language) { _, v in Storage.writeConfig(["mom_language": v]) }
+                Text("The transcript stays in the language that was spoken. Names, products and English technical terms are kept as said.").font(.caption).foregroundStyle(.secondary)
+            } header: { Text("Minutes") }
+
+            Section {
+                HStack {
+                    Button(backup.busy ? "Backing up…" : "Back Up Meetings…") { backup.run(include: backup.includeAudio) }.disabled(backup.busy || r.isRecording)
+                    Toggle("Include recordings", isOn: $backup.includeAudio).toggleStyle(.checkbox).disabled(backup.busy)
+                    if backup.busy { ProgressView().controlSize(.small) }
+                }
+                if let m = backup.message { Text(m).font(.caption).foregroundStyle(backup.failed ? Color.red : .secondary).fixedSize(horizontal: false, vertical: true) }
+                Text("Saves one zip of every meeting (transcripts, minutes, Word and PDF) wherever you choose. Recordings make it much larger.").font(.caption).foregroundStyle(.secondary)
+            } header: { Text("Backup") }
+
             Section { ReadyStep() } header: { Text("This Mac") }
 
             Section {
@@ -472,5 +496,43 @@ struct SettingsView: View {
         }
         .formStyle(.grouped).frame(width: 580, height: 860)
         .onAppear { choice = Storage.root; count = Storage.meetingFolders(in: Storage.root).count }
+    }
+}
+
+
+/// One-click zip of the whole library, written off the main thread.
+@MainActor
+final class BackupJob: ObservableObject {
+    @Published var busy = false
+    @Published var message: String?
+    @Published var failed = false
+    @Published var includeAudio = false
+
+    func run(include: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.prompt = "Back Up Here"; panel.message = "Choose where to save the backup"
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"
+        let zip = dest.appendingPathComponent("Minute-backup-\(f.string(from: Date())).zip")
+        let root = Storage.root
+        busy = true; failed = false; message = nil
+        Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            p.currentDirectoryURL = root.deletingLastPathComponent()
+            var args = ["-r", "-q", zip.path, root.lastPathComponent]
+            if !include { args += ["-x", "*.caf", "*.wav"] }
+            p.arguments = args
+            let err = Pipe(); p.standardError = err
+            var ok = false
+            do { try p.run(); p.waitUntilExit(); ok = p.terminationStatus == 0 || p.terminationStatus == 12 } catch {}
+            let size = (try? zip.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            await MainActor.run {
+                self.busy = false; self.failed = !ok
+                self.message = ok ? "Saved \(zip.lastPathComponent) (\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))" : "The backup could not be written. Check the folder and free space."
+                if ok { NSWorkspace.shared.activateFileViewerSelecting([zip]) }
+            }
+        }
     }
 }

@@ -106,3 +106,32 @@ enum ActionItems {
         try? JSONEncoder().encode(st).write(to: url, options: .atomic)
     }
 }
+
+struct ActionRecord: Codable, Equatable { var task: String; var owner: String; var due: String }
+
+extension ActionItems {
+    private static let months: [String: Int] = [
+        "januari": 1, "january": 1, "jan": 1, "februari": 2, "february": 2, "feb": 2, "maret": 3, "march": 3, "mar": 3, "april": 4, "apr": 4, "mei": 5, "may": 5,
+        "juni": 6, "june": 6, "jun": 6, "juli": 7, "july": 7, "jul": 7, "agustus": 8, "august": 8, "agu": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+        "oktober": 10, "october": 10, "okt": 10, "oct": 10, "november": 11, "nov": 11, "desember": 12, "december": 12, "des": 12, "dec": 12]
+
+    /// "Friday, October 23rd, 2026", "23 Oktober 2026" or "23 Oktober" (year taken from `reference`) -> a date; "TBD" and the like -> nil.
+    static func dueDate(_ text: String, reference: Date = Date()) -> Date? {
+        let words = text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        var day: Int?, month: Int?, year: Int?
+        for w in words {
+            if let m = months[w] { month = month ?? m }
+            else if let n = Int(w) { if n >= 2000 && n < 2100 { year = n } else if (1...31).contains(n) && day == nil { day = n } }
+            else if w.count > 2, let n = Int(w.dropLast(2)), ["st", "nd", "rd", "th"].contains(String(w.suffix(2))), (1...31).contains(n), day == nil { day = n }
+        }
+        guard let d = day, let m = month else { return nil }
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = .current
+        let y = year ?? cal.component(.year, from: reference)
+        return cal.date(from: DateComponents(year: y, month: m, day: d))
+    }
+
+    static func isOverdue(due: String, now: Date = Date()) -> Bool {
+        guard let d = dueDate(due, reference: now) else { return false }
+        return d < Calendar.current.startOfDay(for: now)
+    }
+}

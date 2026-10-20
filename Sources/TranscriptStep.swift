@@ -50,6 +50,7 @@ struct TranscriptPane: View {
     @Binding var lines: [TLine]
     let dir: URL?
     var events: [ScreenEvent] = []
+    var marks: [Mark] = []
     var jump: JumpRequest? = nil
     @State private var flash: UUID?
     @StateObject private var playback = Playback()
@@ -59,22 +60,29 @@ struct TranscriptPane: View {
     @State private var naming: (id: UUID, all: Bool)?
     @State private var nameField = ""
     @State private var expanded: Set<UUID> = []
+    private var invitees: [String] {
+        guard let dir, let d = try? Data(contentsOf: dir.appendingPathComponent("meeting.json")),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [] }
+        return (j["attendees"] as? [String]) ?? []
+    }
 
     private var words: Int { lines.reduce(0) { $0 + $1.text.split(separator: " ").count } }
     private func tint(_ who: String) -> Color { who == "Me" ? .blue : who == "Others" ? .orange : who == "Speaker" ? .gray : .purple }
     private func matches(_ l: TLine) -> Bool { query.isEmpty || l.text.localizedCaseInsensitiveContains(query) || l.speaker.localizedCaseInsensitiveContains(query) }
 
-    private enum Item: Identifiable { case line(UUID), screen(ScreenEvent)
-        var id: UUID { switch self { case .line(let i): return i; case .screen(let e): return e.id } } }
+    private enum Item: Identifiable { case line(UUID), screen(ScreenEvent), mark(Mark)
+        var id: UUID { switch self { case .line(let i): return i; case .screen(let e): return e.id; case .mark(let m): return m.id } } }
 
     /// The transcript with shown-on-screen moments slotted in by time.
     private var items: [Item] {
-        var out: [Item] = []; var pending = events.sorted { $0.t < $1.t }
+        var out: [Item] = []; var pending = events.sorted { $0.t < $1.t }; var flags = marks.sorted { $0.t < $1.t }
         for l in lines {
             while let e = pending.first, Double(e.t) <= l.seconds { out.append(.screen(e)); pending.removeFirst() }
+            while let m = flags.first, Double(m.t) <= l.seconds { out.append(.mark(m)); flags.removeFirst() }
             out.append(.line(l.id))
         }
         out += pending.map { .screen($0) }
+        out += flags.map { .mark($0) }
         return out
     }
 
@@ -111,6 +119,7 @@ struct TranscriptPane: View {
                             case .line(let id):
                                 if let i = lines.firstIndex(where: { $0.id == id }) { row($lines[i]) }
                             case .screen(let e): screenRow(e)
+                            case .mark(let m): markRow(m)
                             }
                         }
                     }.padding(.horizontal, 10).padding(.vertical, 6)
@@ -147,12 +156,18 @@ struct TranscriptPane: View {
     private func setWho(_ who: String, for id: UUID) { if let i = lines.firstIndex(where: { $0.id == id }) { lines[i].who = who } }
 
     private func speakerMenu(_ line: TLine) -> some View {
-        let names = Array(Set(lines.map(\.who))).filter { !["Me", "Others", "Speaker"].contains($0) }.sorted()
+        let known = Array(Set(lines.map(\.who))).filter { !["Me", "Others", "Speaker"].contains($0) }.sorted()
+        let invited = invitees.filter { n in !known.contains { $0.caseInsensitiveCompare(n) == .orderedSame } }
+        let names = known
         return Menu {
             Section("This line") {
                 Button("You") { setWho("Me", for: line.id) }
                 Button("Others") { setWho("Others", for: line.id) }
                 ForEach(names, id: \.self) { n in Button(n) { setWho(n, for: line.id) } }
+                if !invited.isEmpty {
+                    Divider()
+                    Section("Invited") { ForEach(invited, id: \.self) { n in Button(n) { setWho(n, for: line.id) } } }
+                }
                 Button("New name…") { nameField = ""; naming = (line.id, false) }
             }
             Divider()
@@ -163,6 +178,17 @@ struct TranscriptPane: View {
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).frame(width: 66, alignment: .leading)
         .help("Say who is speaking").accessibilityLabel("Speaker \(line.speaker). Change speaker")
+    }
+
+    private func markRow(_ m: Mark) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: m.kind.symbol).foregroundStyle(m.kind.tint).frame(width: 70, alignment: .leading).accessibilityHidden(true)
+            Text("You flagged this as \(m.kind.label.lowercased()) · \(m.time)").font(.caption.weight(.semibold)).foregroundStyle(m.kind.tint)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(m.kind.tint.opacity(0.10)))
+        .accessibilityLabel("Flag at \(m.time): \(m.kind.label)")
     }
 
     private func screenRow(_ e: ScreenEvent) -> some View {
@@ -236,7 +262,7 @@ struct StepTranscript: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 4).frame(maxWidth: 760 + 48, alignment: .leading).frame(maxWidth: .infinity)
-            TranscriptPane(lines: $r.tLines, dir: r.session, events: r.screenEvents).frame(maxWidth: 760 + 48)
+            TranscriptPane(lines: $r.tLines, dir: r.session, events: r.screenEvents, marks: r.marks).frame(maxWidth: 760 + 48)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     }

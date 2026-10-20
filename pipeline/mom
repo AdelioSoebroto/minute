@@ -347,6 +347,23 @@ def load_json(p, default):
 def screen_events(session: Path):
     return [e for e in load_json(session / "screens.json", []) if isinstance(e, dict) and (e.get("text") or "").strip()]
 
+def marks_block(session: Path):
+    """Moments the user flagged live (action / decision / important), with what was said in the half minute before each."""
+    marks = [m for m in load_json(session / "marks.json", []) if isinstance(m, dict) and isinstance(m.get("t"), (int, float))]
+    if not marks: return ""
+    lines = []
+    try:
+        for raw in (session / "transcript.md").read_text().splitlines():
+            m = re.match(r"\[(\d+):(\d+):(\d+)\]\s*([^:]+):\s*(.*)", raw)
+            if m: lines.append((int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]), m[4].strip(), m[5].strip()))
+    except Exception: pass
+    out = []
+    for mk in sorted(marks, key=lambda x: x["t"])[:40]:
+        near = " ".join(f"{who}: {txt}" for t, who, txt in lines if mk["t"] - 30 <= t <= mk["t"] + 3)[:500]
+        out.append(f"[{ts(mk['t'])}] {str(mk.get('kind', 'important')).upper()}" + (f" - just said: \"{near}\"" if near else ""))
+    return ("FLAGS THE USER DROPPED DURING THE MEETING (the point being discussed right before each flag matters most): " + " | ".join(out) +
+            ". Every ACTION flag must appear as an action item with its owner and due date, every DECISION flag as a decision, and every IMPORTANT flag in the topics.")
+
 def context_block(session: Path, limit=2600):
     """Extra facts for the writing prompts: the calendar entry the meeting was recorded for, and text that was on screen (slides, documents) with times."""
     parts = []
@@ -362,6 +379,8 @@ def context_block(session: Path, limit=2600):
             if used + len(line) > limit: break
             lines.append(line); used += len(line)
         parts.append("TEXT SHOWN ON SCREEN DURING THE MEETING (slides or documents, with times; use it to spell names, products and numbers right and to understand what 'ini', 'yang ini' or 'this' refers to; do not copy it wholesale): " + " | ".join(lines))
+    mb = marks_block(session)
+    if mb: parts.append(mb)
     return "\n".join(parts)
 
 def screen_terms(session: Path):
@@ -724,7 +743,7 @@ def analyse(transcript: str, meta: str):
               "- decisions: only what was actually agreed. action_items: concrete tasks with owner and due. open_questions: unresolved points.\n"
               "- informal_terms: any slang you had to interpret, as 'said = meaning'.\n"
               "- summary: 2-3 plain sentences of what the meeting was about.\n"
-              "Write in formal Bahasa Indonesia (keep English technical terms). Never invent facts.")
+              ("Write in formal English. Never invent facts." if CFG["mom_language"] == "en" else "Write in formal Bahasa Indonesia (keep English technical terms). Never invent facts."))
     return json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}", ANALYSIS_SCHEMA))
 
 def make_mom(transcript: str, session: Path):

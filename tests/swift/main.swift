@@ -39,5 +39,13 @@ var st = ActionItems.State(); st.done.insert("a"); ActionItems.save(st, to: tmpU
 check(ActionItems.load(tmpURL).done == ["a"], "state round trip")
 try? FileManager.default.removeItem(at: tmpURL)
 
+var dc = Calendar(identifier: .gregorian); dc.timeZone = .current
+let ref = dc.date(from: DateComponents(year: 2026, month: 10, day: 20))!
+check(ActionItems.dueDate("Friday, October 23rd, 2026", reference: ref) == dc.date(from: DateComponents(year: 2026, month: 10, day: 23)), "due: English long date")
+check(ActionItems.dueDate("Jumat, 23 Oktober 2026", reference: ref) == dc.date(from: DateComponents(year: 2026, month: 10, day: 23)), "due: Indonesian date")
+check(ActionItems.dueDate("23 Oktober", reference: ref) == dc.date(from: DateComponents(year: 2026, month: 10, day: 23)), "due: year from reference")
+check(ActionItems.dueDate("TBD", reference: ref) == nil && ActionItems.dueDate("setiap Senin", reference: ref) == nil, "due: no date")
+check(ActionItems.isOverdue(due: "1 Januari 2020") && !ActionItems.isOverdue(due: "TBD"), "overdue")
+
 print(failures == 0 ? "swift tests passed" : "\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

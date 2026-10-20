@@ -239,6 +239,7 @@ struct Meeting: Identifiable, Hashable {
     var hasDocx: Bool
     var hasPdf: Bool
     var transcript: String
+    var actions: [ActionRecord] = []
     var title: String { (data?.agenda.isEmpty == false ? data?.agenda : nil) ?? "Untitled meeting" }
     var status: String { hasPdf ? "Exported" : data != nil ? "Draft" : transcript.isEmpty ? "Audio only" : "Transcribed" }
     static func == (a: Meeting, b: Meeting) -> Bool { a.dir == b.dir && a.hasPdf == b.hasPdf && a.date == b.date && a.title == b.title }
@@ -268,16 +269,24 @@ final class Library: ObservableObject {
         for d in dirs {
             guard (try? d.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
                   let date = f.date(from: String(d.lastPathComponent.prefix(15))) else { continue }
-            let stamp = [mtime(d), mtime(d.appendingPathComponent("MoM.json")), mtime(d.appendingPathComponent("transcript.md"))]
+            let stamp = [mtime(d), mtime(d.appendingPathComponent("MoM.json")), mtime(d.appendingPathComponent("transcript.md")), mtime(d.appendingPathComponent("analysis.json"))]
             if let c = cache[d], c.stamp == stamp { next[d] = c; continue }
             let data = (try? Data(contentsOf: d.appendingPathComponent("MoM.json"))).flatMap { try? JSONDecoder().decode(MoMData.self, from: $0) }
             let tr = (try? String(contentsOf: d.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
             next[d] = (stamp, Meeting(dir: d, date: date, data: data,
                                       hasDocx: exportedFile(in: d, ext: "docx") != nil, hasPdf: exportedFile(in: d, ext: "pdf") != nil,
-                                      transcript: tr.replacingOccurrences(of: "# Transcript\n\n", with: "")))
+                                      transcript: tr.replacingOccurrences(of: "# Transcript\n\n", with: ""),
+                                      actions: Library.loadActions(d)))
         }
         cache = next
         meetings = next.values.map(\.meeting).sorted { $0.date > $1.date }
+    }
+
+    /// The model's own list of tasks (task, owner, due) from the minutes run; empty for older meetings.
+    static func loadActions(_ d: URL) -> [ActionRecord] {
+        struct A: Decodable { var action_items: [ActionRecord]? }
+        guard let raw = try? Data(contentsOf: d.appendingPathComponent("analysis.json")), let a = try? JSONDecoder().decode(A.self, from: raw) else { return [] }
+        return (a.action_items ?? []).filter { !$0.task.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
     func trash(_ m: Meeting) {
@@ -380,16 +389,27 @@ struct LibraryView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var selection: URL?
     @State private var query = ""
+    @State private var scope = 0     // 0 all, 1 this week, 2 drafts, 3 exported
     @State private var confirmDelete: Meeting?
     @StateObject private var tracker = ActionTracker()
     static let openItemsID = URL(string: "minute://open-items")!
 
     var filtered: [Meeting] {
-        guard !query.isEmpty else { return lib.meetings }
-        return lib.meetings.filter { m in
+        let base = lib.meetings.filter { m in
+            switch scope {
+            case 1: return Calendar.current.dateInterval(of: .weekOfYear, for: Date())?.contains(m.date) ?? true
+            case 2: return !m.hasPdf
+            case 3: return m.hasPdf
+            default: return true
+            }
+        }
+        guard !query.isEmpty else { return base }
+        return base.filter { m in
             m.title.localizedCaseInsensitiveContains(query) || m.transcript.localizedCaseInsensitiveContains(query)
                 || (m.data?.topics.contains { $0.localizedCaseInsensitiveContains(query) } ?? false)
                 || (m.data?.telkomsel_names.contains { $0.localizedCaseInsensitiveContains(query) } ?? false)
+                || (m.data?.third_party_names.contains { $0.localizedCaseInsensitiveContains(query) } ?? false)
+                || m.actions.contains { $0.owner.localizedCaseInsensitiveContains(query) || $0.task.localizedCaseInsensitiveContains(query) }
         }
     }
 
@@ -412,6 +432,8 @@ struct LibraryView: View {
             VStack(spacing: 0) {
             RecordCard(r: r)
             ForEach(r.unfinished, id: \.self) { d in RecoveryCard(r: r, dir: d) }
+            Picker("Show", selection: $scope) { Text("All").tag(0); Text("This week").tag(1); Text("Drafts").tag(2); Text("Exported").tag(3) }
+                .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12).padding(.vertical, 6)
             List(selection: $selection) {
                 Section {
                     Label("Open items", systemImage: "checklist").tag(Self.openItemsID)

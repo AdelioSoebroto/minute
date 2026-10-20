@@ -17,6 +17,7 @@ final class MeetingEditor: ObservableObject {
     @Published var tLines: [TLine] = [] { didSet { touch() } }
     @Published var hasMinutes = false
     @Published var screenEvents: [ScreenEvent] = []
+    @Published var marks: [Mark] = []
     @Published var busy: String?
     @Published var error: String?
     @Published var savedAt: Date?
@@ -30,7 +31,7 @@ final class MeetingEditor: ObservableObject {
         loading = true; defer { loading = false }
         let tr = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
         tLines = TLine.parse(tr); loadedTranscript = TLine.serialize(tLines)
-        screenEvents = ScreenEvent.load(from: dir)
+        screenEvents = ScreenEvent.load(from: dir); marks = Mark.load(from: dir)
         if let raw = try? Data(contentsOf: dir.appendingPathComponent("MoM.json")), let d = try? JSONDecoder().decode(MoMData.self, from: raw) {
             agenda = d.agenda; date = d.date; time = d.time
             telkNames = d.telkomsel_names.joined(separator: "\n"); telkUnit = d.telkomsel_unit
@@ -161,7 +162,7 @@ struct MeetingWorkspace: View {
                     .buttonStyle(.borderless).foregroundStyle(showAsk ? Color.accentColor : .secondary)
                     .disabled(editor.tLines.isEmpty).help("Ask a question about this meeting")
             }.padding(.horizontal, 16).padding(.top, 10)
-            TranscriptPane(lines: $editor.tLines, dir: meeting.dir, events: editor.screenEvents, jump: jump)
+            TranscriptPane(lines: $editor.tLines, dir: meeting.dir, events: editor.screenEvents, marks: editor.marks, jump: jump)
             if showAsk { askBar }
         }
         .background(Color(nsColor: .textBackgroundColor))

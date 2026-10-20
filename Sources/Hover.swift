@@ -125,6 +125,7 @@ struct FloatingView: View {
                     .font(.caption2).foregroundStyle(ended || r.warning != nil ? Color.orange : .secondary)
             }
             Waveform(samples: Array(r.history.suffix(18))).frame(width: 54, height: 22)
+            FlagMenu(r: r)
             Button { openApp() } label: { Image(systemName: "arrow.up.forward.app") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary).help("Open Minute").accessibilityLabel("Open Minute")
             HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: ended ? .red : .primary, seconds: 1.5, size: 40, showTitle: false) { r.stop(); openApp() }
@@ -164,6 +165,7 @@ final class FloatingControl {
     func attach(_ r: Recorder) {
         guard recorder == nil else { return }
         recorder = r
+        MarkHotKeys.shared.fire = { [weak r] k in r?.addMark(k) }; MarkHotKeys.shared.register()
         let d = MeetingDetector.shared
         d.start()
         r.$phase.removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.update() } }.store(in: &bag)

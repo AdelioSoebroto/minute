@@ -13,12 +13,16 @@ rm -rf build; mkdir -p "$APP/Contents/MacOS"
 swiftc -target arm64-apple-macos14.2 -parse-as-library -O -o "$APP/Contents/MacOS/Minute" Sources/*.swift \
   -framework SwiftUI -framework AppKit -framework AVFoundation -framework CoreAudio -framework UserNotifications
 cp Info.plist "$APP/Contents/Info.plist"
-mkdir -p "$APP/Contents/Resources"; cp -R Resources/*.lproj "$APP/Contents/Resources/"; if [[ "$ICON" == light ]]; then cp icon/Minute-light.icns "$APP/Contents/Resources/Minute.icns"; else cp icon/Minute.icns "$APP/Contents/Resources/Minute.icns"; fi
+VERSION=$(tr -d '[:space:]' < VERSION); BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" -c "Set :CFBundleVersion $BUILD" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"; cp CHANGELOG.md "$APP/Contents/Resources/"; cp -R Resources/*.lproj "$APP/Contents/Resources/"; if [[ "$ICON" == light ]]; then cp icon/Minute-light.icns "$APP/Contents/Resources/Minute.icns"; else cp icon/Minute.icns "$APP/Contents/Resources/Minute.icns"; fi
 # A stable local identity ("Minute Local") keeps macOS permissions across rebuilds; ad-hoc is the fallback.
 ID=$(security find-identity -p codesigning | awk -F'"' '/"Minute Local"/{print $2; exit}')
 [[ -n "$ID" ]] || echo "NOTE: building with a temporary signature, so macOS will ask for permissions again after every rebuild. Run ./setup-signing.sh once to stop that."
-codesign --force --sign "${ID:--}" "$APP"
-echo "built $APP"
+# Hardened Runtime + entitlements: what notarization requires, and a smaller attack surface.
+codesign --force --options runtime --entitlements Minute.entitlements --sign "${ID:--}" "$APP"
+codesign --verify --strict "$APP"
+echo "built $APP ($VERSION build $BUILD)"
 if [[ "$1" == deploy ]]; then
   pkill -x Minute 2>/dev/null || true
   mkdir -p ~/Applications ~/.mom/bin

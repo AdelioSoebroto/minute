@@ -50,6 +50,10 @@ check(ActionItems.isOverdue(due: "1 Januari 2020") && !ActionItems.isOverdue(due
 check(ActionItems.dueDate("2026-10-23", reference: ref) == dc.date(from: DateComponents(year: 2026, month: 10, day: 23)), "due: ISO date")
 check(ActionItems.niceDue("2026-10-23") == "23 Oct 2026" && ActionItems.niceDue("TBD") == "TBD", "nice due")
 
+let cl = "# Changelog\n\n## [1.2.0] - 2026-11-01\n\n### New\n- B\n\n## [1.1.0] - 2026-10-20\n\n### Fixed\n- A\n"
+check(Changelog.section(for: "1.1.0", in: cl) == "### Fixed\n- A", "changelog: picks the right section")
+check(Changelog.section(for: "1.2.0", in: cl)?.contains("- B") == true && Changelog.section(for: "9.9.9", in: cl) == nil, "changelog: newest and missing")
+
 failures += gateTest()
 
 print(failures == 0 ? "swift tests passed" : "\(failures) failure(s)")

@@ -340,6 +340,18 @@ def install_tools():
     print("DONE", flush=True)
 
 # ---------- context beyond the audio: calendar event and what was shown on screen ----------
+def write_atomic(path: Path, text: str):
+    """Write via a temp file and rename, so a crash or power cut never leaves a half-written file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text); os.replace(tmp, path)
+
+def snapshot_minutes(d: Path):
+    """Keep the minutes as they were before they are rewritten (MoM.previous.json), so a rewrite can always be undone by hand."""
+    f = d / "MoM.json"
+    if f.exists():
+        try: write_atomic(d / "MoM.previous.json", f.read_text())
+        except Exception as e: log("snapshot skipped: " + repr(e))
+
 def load_json(p, default):
     try: return json.loads(Path(p).read_text())
     except Exception: return default
@@ -1250,7 +1262,7 @@ def tidy(d: Path):
         except Exception as e:
             print("tidy: wording pass skipped:", e, flush=True)
     data["topics"] = topics
-    f.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    write_atomic(f, json.dumps(data, ensure_ascii=False, indent=2))
     print("DONE", d, flush=True)
 
 def ask(d: Path, question: str):
@@ -1369,7 +1381,8 @@ def main():
         if len(transcript) < 20: raise SystemExit("The transcript is empty. Add some text first.")
         ensure_ollama()
         data = make_mom(transcript, d)
-        (d / "MoM.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        snapshot_minutes(d)
+        write_atomic(d / "MoM.json", json.dumps(data, ensure_ascii=False, indent=2))
         try: harvest_terms(d)
         except Exception as e: log("term harvest skipped: " + repr(e))
         print("DONE", d, flush=True); return
@@ -1410,7 +1423,8 @@ def main():
         print("DONE", d, flush=True); return
     ensure_ollama()
     data = make_mom(transcript, d)
-    (d / "MoM.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    snapshot_minutes(d)
+    write_atomic(d / "MoM.json", json.dumps(data, ensure_ascii=False, indent=2))
     print("DONE", d, flush=True)
 
 def unload():

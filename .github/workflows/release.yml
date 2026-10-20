@@ -1,0 +1,30 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install python-docx
+        run: python3 -m pip install --user python-docx
+      - name: Tag must match VERSION
+        run: test "v$(tr -d '[:space:]' < VERSION)" = "${GITHUB_REF_NAME}"
+      - name: Test and build
+        run: ./build.sh test && ./build.sh
+      - name: Package and write the notes from CHANGELOG.md
+        run: |
+          V=$(tr -d '[:space:]' < VERSION)
+          ditto -c -k --keepParent build/Minute.app "build/Minute-$V.zip"
+          shasum -a 256 "build/Minute-$V.zip" > "build/Minute-$V.zip.sha256"
+          awk -v v="[$V]" '/^## /{ if (found) exit; found = index($0, v) > 0; next } found' CHANGELOG.md > build/RELEASE_NOTES.md
+          test -s build/RELEASE_NOTES.md
+      - name: Publish the GitHub release
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          V=$(tr -d '[:space:]' < VERSION)
+          gh release create "v$V" "build/Minute-$V.zip" "build/Minute-$V.zip.sha256" --title "Minute $V" --notes-file build/RELEASE_NOTES.md

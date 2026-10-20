@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import CoreSpotlight
 import AVFoundation
 import CoreAudio
 import UserNotifications
@@ -935,6 +936,15 @@ struct StepExport: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var showLibrary: (() -> Void)?
     static var isBusy: (() -> Bool)?
+    static var openURL: ((URL) -> Void)?
+    func applicationWillTerminate(_ notification: Notification) { Stability.cleanExit() }
+    func application(_ application: NSApplication, open urls: [URL]) { urls.forEach { AppDelegate.openURL?($0) } }
+    func application(_ application: NSApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([NSUserActivityRestoring]) -> Void) -> Bool {
+        guard userActivity.activityType == CSSearchableItemActionType, let id = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return false }
+        AppDelegate.showLibrary?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NotificationCenter.default.post(name: .openMeeting, object: URL(fileURLWithPath: id)) }
+        return true
+    }
     /// Never lose a meeting to an accidental ⌘Q or Dock > Quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard AppDelegate.isBusy?() == true else { return .terminateNow }
@@ -973,6 +983,9 @@ struct MinuteApp: App {
             .onAppear {
                 AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
                 AppDelegate.isBusy = { r.isRecording || r.isBusy }
+                Stability.shared.start()
+                AppDelegate.openURL = { url in Links.handle(url, r: r, showRecorder: { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) },
+                                                            showLibrary: { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }) }
                 FloatingControl.shared.openApp = { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
                 if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == nil {
                     FloatingControl.shared.attach(r)
@@ -1015,6 +1028,7 @@ struct MinuteApp: App {
                 Button("Current Recording") { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }.keyboardShortcut("0", modifiers: .command)
             }
             CommandGroup(after: .help) {
+                Button("What's New in Minute") { NotificationCenter.default.post(name: .showWhatsNew, object: nil); openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
                 Button("Welcome Tour & Setup…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
                 Button(r.diagnosticsCopied ? "Diagnostics Copied" : "Copy Diagnostics") { r.copyDiagnostics() }
             }

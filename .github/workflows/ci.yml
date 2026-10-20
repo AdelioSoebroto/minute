@@ -7,7 +7,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install python-docx
         run: python3 -m pip install --user python-docx
-      - name: Pipeline and app logic tests
+      - name: Lint property lists
+        run: plutil -lint Info.plist Minute.entitlements
+      - name: Pipeline, release-notes and app logic tests
         run: ./build.sh test
-      - name: Build the app
+      - name: Build the app (Hardened Runtime, ad-hoc signed)
         run: ./build.sh
+      - name: Check the signature, entitlements and version
+        run: |
+          codesign --verify --strict build/Minute.app
+          codesign -dv build/Minute.app 2>&1 | grep -q "flags=0x10000(runtime)"
+          test "$(defaults read "$PWD/build/Minute.app/Contents/Info" CFBundleShortVersionString)" = "$(tr -d '[:space:]' < VERSION)"

@@ -145,3 +145,16 @@ extension ActionItems {
         return d < Calendar.current.startOfDay(for: now)
     }
 }
+
+enum Changelog {
+    /// The body of the "## [x.y.z]" section of CHANGELOG.md, or nil if there is none.
+    static func section(for version: String, in text: String) -> String? {
+        var out: [String] = []; var inside = false
+        for line in text.components(separatedBy: "\n") {
+            if line.hasPrefix("## ") { if inside { break }; inside = line.contains("[\(version)]"); continue }
+            if inside { out.append(line) }
+        }
+        let s = out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty ? nil : s
+    }
+}

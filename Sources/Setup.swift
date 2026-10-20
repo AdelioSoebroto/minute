@@ -402,6 +402,8 @@ struct SettingsView: View {
     @State private var thumbs = ScreenContext.keepThumbnails
     @State private var useCalendar = CalendarContext.enabled
     @State private var muteGate = Recorder.muteGate
+    @State private var openAtLogin = Login.enabled
+    @State private var spotlight = SpotlightIndex.enabled
     @State private var language = (Storage.configValue("mom_language") as? String) ?? "auto"
     @State private var backup = BackupJob()
     @State private var terms = (try? String(contentsOf: home.appendingPathComponent(".mom/terms.txt"), encoding: .utf8)) ?? ""
@@ -480,6 +482,9 @@ struct SettingsView: View {
             Section {
                 Toggle("Pause my microphone while I'm muted in the meeting", isOn: $muteGate).onChange(of: muteGate) { _, v in Recorder.muteGate = v }
                 Text("For online meetings only. Works with meeting apps that let go of the microphone when you mute (most do); if yours keeps it open, Minute records as usual. Everyone else still comes through the meeting audio.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Open Minute when I log in", isOn: $openAtLogin).onChange(of: openAtLogin) { _, v in Login.set(v); openAtLogin = Login.enabled }
+                Toggle("Show my meetings in Spotlight", isOn: $spotlight).onChange(of: spotlight) { _, v in SpotlightIndex.enabled = v; SpotlightIndex.update(lib.meetings) }
+                Text("Spotlight keeps titles and the first topics on this Mac only. Off by default because minutes can be confidential.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Show a floating control during online meetings", isOn: $floating).onChange(of: floating) { _, v in FloatingControl.enabled = v }
                 Text("A small pill appears when Teams, Zoom, Meet, Webex or similar is using your microphone, with hold-to-record and hold-to-stop. It is hidden from screen sharing.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Read shared screens for context", isOn: $readScreens).onChange(of: readScreens) { _, v in ScreenContext.enabled = v }
@@ -528,8 +533,7 @@ final class BackupJob: ObservableObject {
             if !include { args += ["-x", "*.caf", "*.wav"] }
             p.arguments = args
             let err = Pipe(); p.standardError = err
-            var ok = false
-            do { try p.run(); p.waitUntilExit(); ok = p.terminationStatus == 0 || p.terminationStatus == 12 } catch {}
+            let ok: Bool = { do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 || p.terminationStatus == 12 } catch { return false } }()
             let size = (try? zip.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             await MainActor.run {
                 self.busy = false; self.failed = !ok

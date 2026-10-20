@@ -392,6 +392,7 @@ struct LibraryView: View {
     @State private var scope = 0     // 0 all, 1 this week, 2 drafts, 3 exported
     @State private var confirmDelete: Meeting?
     @StateObject private var tracker = ActionTracker()
+    @State private var showWhatsNew = false
     static let openItemsID = URL(string: "minute://open-items")!
 
     var filtered: [Meeting] {
@@ -460,7 +461,13 @@ struct LibraryView: View {
             else { ContentUnavailableView("Select a meeting", systemImage: "doc.text.magnifyingglass", description: Text("Its minutes and transcript appear here.")) }
         }
         .frame(minWidth: 1260, minHeight: 640)
+        .safeAreaInset(edge: .top, spacing: 0) { CrashBanner(s: Stability.shared) }
+        .sheet(isPresented: $showWhatsNew) { WhatsNewView { AppInfo.markWhatsNewSeen(); showWhatsNew = false } }
+        .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in showWhatsNew = true }
+        .onReceive(NotificationCenter.default.publisher(for: .openMeeting)) { n in if let u = n.object as? URL { selection = u } }
+        .onChange(of: lib.meetings) { _, m in SpotlightIndex.update(m) }
         .onAppear {
+            if AppInfo.shouldShowWhatsNew() { showWhatsNew = true }
             lib.refresh(); if selection == nil { selection = lib.meetings.first?.id }
             AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
             AppDelegate.isBusy = { r.isRecording || r.isBusy }

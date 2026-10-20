@@ -11,6 +11,9 @@
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+<key>NSHumanReadableCopyright</key><string>Minute. Everything stays on your Mac.</string>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>local.minute.app</string><key>CFBundleURLSchemes</key><array><string>minute</string></array></dict></array>
 <key>LSMinimumSystemVersion</key><string>14.2</string>
 <key>NSScreenCaptureUsageDescription</key><string>While you record an online meeting, Minute reads the text on the meeting window (slides and shared screens) on this Mac, so the minutes use that context. Images are not kept unless you choose to.</string>
 <key>NSMicrophoneUsageDescription</key><string>Minute records your voice in meetings so it can write the minutes. Audio stays on this Mac.</string>

@@ -59,6 +59,20 @@ python3 tests/bench.py     # accuracy benchmark on the real local model (names, 
 
 Requirements: Apple silicon, macOS 14.2 or later, Xcode Command Line Tools. Everything else is installed from the app's setup page.
 
+## Releases
+
+Versions follow SemVer: `VERSION` holds the number, the build number is the commit count, and `CHANGELOG.md` says what is **new**, **improved** and **fixed** in each release. The app shows the current notes once after an update (Help > What's New).
+
+```bash
+# 1. bump VERSION and add a "## [x.y.z] - date" section to CHANGELOG.md, commit
+./release.sh               # refuses without release notes or with uncommitted changes; tests, builds, signs, zips, tags
+git push origin vX.Y.Z     # CI builds it again and publishes the GitHub release with the notes
+```
+
+CI (`.github/workflows/ci.yml`) lints the property lists, runs every test, builds with Hardened Runtime and checks the signature and version on every push. The test suite fails when the current `VERSION` has no changelog section.
+
+Built in for stability: atomic saves and `MoM.previous.json` snapshots, crash recovery for recordings, a notice (and local crash and macOS diagnostic reports in `~/.mom/crashes`) when Minute closed unexpectedly, Hardened Runtime with minimal entitlements, and `minute://start|stop|flag/<kind>|open` links for Shortcuts (start and stop always ask first).
+
 ## Layout
 
 ```

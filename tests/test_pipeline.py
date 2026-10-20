@@ -217,6 +217,24 @@ class Names(unittest.TestCase):
         self.assertEqual(m.apply_corrections("kasih TZ lagi"), "kasih Teazzi lagi")
 
 
+class Release(unittest.TestCase):
+    """Every version that is built must have release notes and a valid app bundle description."""
+    root = Path(__file__).resolve().parent.parent
+    def test_version_has_changelog_notes(self):
+        v = (self.root / "VERSION").read_text().strip()
+        self.assertRegex(v, r"^\d+\.\d+\.\d+$")
+        log = (self.root / "CHANGELOG.md").read_text()
+        i = log.find(f"## [{v}]"); self.assertGreaterEqual(i, 0, f"CHANGELOG.md has no section for {v}")
+        body = log[i:].split("\n## ", 1)[0]
+        self.assertIn("### ", body); self.assertGreater(len(body), 120)
+    def test_plists_are_valid(self):
+        import plistlib
+        for f in ("Info.plist", "Minute.entitlements"): plistlib.loads((self.root / f).read_bytes())
+        info = plistlib.loads((self.root / "Info.plist").read_bytes())
+        for k in ("NSMicrophoneUsageDescription", "NSAudioCaptureUsageDescription", "NSScreenCaptureUsageDescription", "NSCalendarsFullAccessUsageDescription"):
+            self.assertTrue(info.get(k), k)
+
+
 class Analysis(unittest.TestCase):
     def test_analysis_prompt_builds_in_both_languages(self):
         seen = []

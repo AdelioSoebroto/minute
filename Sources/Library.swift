@@ -320,6 +320,7 @@ struct RecordCard: View {
     var statusText: String {
         switch r.phase {
         case .processing(let s): return s
+        case .transcript: return "Your transcript is ready to check"
         case .review: return "Your minutes are ready to review"
         case .exporting(let s): return s
         case .done: return "Word and PDF are ready"

@@ -158,5 +158,17 @@ class Templates(unittest.TestCase):
         self.assertIn(m.device_profile()["tier"], ("standard", "light"))
 
 
+class TranscriptCleanup(unittest.TestCase):
+    def test_drops_whisper_credit_lines_and_repeats(self):
+        segs = [(0, "Others", "Sous-titrage Société Radio-Canada"), (5, "Me", "Ya halo selamat pagi"), (9, "Me", "Thanks for watching!"),
+                (20, "Others", "ini kalimat yang sama lagi"), (30, "Others", "ini kalimat yang sama lagi"), (40, "Others", "ini kalimat yang sama lagi"), (50, "Others", "Okay"), (60, "Others", "Okay"), (70, "Others", "Okay")]
+        self.assertEqual([x[2] for x in m.drop_hallucinations(segs)], ["Ya halo selamat pagi", "Okay", "Okay", "Okay"])
+    def test_long_block_becomes_timed_sentence_lines(self):
+        out = m.split_lines(0, 30, "Me", "Satu kalimat pendek. " + "Dua kalimat yang jauh lebih panjang dari yang pertama, " * 3 + "selesai.")
+        self.assertGreaterEqual(len(out), 2)
+        self.assertEqual(out[0][0], 0)
+        self.assertTrue(all(a[0] < b[0] for a, b in zip(out, out[1:])))
+
+
 if __name__ == "__main__":
     unittest.main()

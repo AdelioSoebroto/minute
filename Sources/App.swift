@@ -18,9 +18,10 @@ enum Mode: String, CaseIterable, Identifiable {
 enum Phase: Equatable {
     case idle
     case recording
-    case processing(String)   // step 1: transcribing + drafting
-    case review               // step 2
-    case exporting(String)    // step 3
+    case processing(String)   // step 1: transcribing, then drafting
+    case transcript           // step 2: check what was heard
+    case review               // step 3: edit the minutes
+    case exporting(String)    // step 4
     case done
     case failed(String)
 }
@@ -84,6 +85,9 @@ final class Recorder: ObservableObject {
     private var rotateWork: DispatchWorkItem?
     @Published var session: URL?
     @Published var transcript = ""
+    @Published var tLines: [TLine] = []
+    @Published var workTitle = "Transcribing the recording"
+    @Published var autoDraft: Bool = UserDefaults.standard.bool(forKey: "autoDraft") { didSet { UserDefaults.standard.set(autoDraft, forKey: "autoDraft") } }
     @Published var lastDir: URL? = Recorder.latestSession()
 
     // Review form
@@ -112,8 +116,9 @@ final class Recorder: ObservableObject {
     var isBusy: Bool { switch phase { case .processing, .exporting: return true; default: return false } }
     var step: Int {
         switch phase {
-        case .review: return 1
-        case .exporting, .done: return 2
+        case .transcript: return 1
+        case .review: return 2
+        case .exporting, .done: return 3
         default: return 0
         }
     }
@@ -152,6 +157,7 @@ final class Recorder: ObservableObject {
         session = momRoot.appendingPathComponent("2026-10-20_0900_test")
         switch name {
         case "review": phase = .review
+        case "transcript": tLines = TLine.parse(transcript); phase = .transcript
         case "export": phase = .done
         case "processing": phase = .processing("Transcribing Me: 2 of 5 min")
         default: break
@@ -256,19 +262,49 @@ final class Recorder: ObservableObject {
         draft(dir)
     }
 
-    /// Transcribe + draft the MoM, then slide to review.
+    /// Step 1: transcribe on this Mac, then slide to the transcript check (or straight on to the minutes if the user skips that step).
     func draft(_ dir: URL) {
         session = dir
+        workTitle = "Transcribing the recording"
         phase = .processing("Starting…")
         Task {
-            let (code, tail) = await runMom([dir.path]) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
+            let (code, tail) = await runMom([dir.path, "--transcript-only"]) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
+            if code == 0 {
+                loadTranscript(dir)
+                let env = ProcessInfo.processInfo.environment
+                if autoDraft || env["MINUTE_AUTODRAFT"] != nil || env["MINUTE_AUTOEXPORT"] != nil { writeMinutes() }
+                else { phase = .transcript; notify("Transcript ready", "Open Minute to check it, then write the minutes.") }
+            } else {
+                phase = .failed("Could not transcribe the recording: \(tail)\nYour audio is safe in \(dir.lastPathComponent).")
+                notify("Minute failed", "Audio is saved. Open Minute for details.")
+            }
+        }
+    }
+
+    func loadTranscript(_ dir: URL) {
+        session = dir
+        transcript = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
+        tLines = TLine.parse(transcript)
+    }
+
+    /// Step 2 to 3: save the (possibly corrected) transcript and write the minutes from it.
+    func writeMinutes() {
+        guard let dir = session else { return }
+        let text = TLine.serialize(tLines)
+        do { try text.write(to: dir.appendingPathComponent("transcript.md"), atomically: true, encoding: .utf8) }
+        catch { phase = .failed("Could not save the transcript: \(error.localizedDescription)"); return }
+        transcript = text
+        workTitle = "Writing your minutes"
+        phase = .processing("Starting…")
+        Task {
+            let (code, tail) = await runMom(["--draft", dir.path]) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
             if code == 0, loadDraft(dir) {
                 phase = .review
                 if ProcessInfo.processInfo.environment["MINUTE_AUTOEXPORT"] != nil { export() }   // test hook
                 notify("Minutes drafted", "Open Minute to review and export.")
             } else {
-                phase = .failed("Could not draft the minutes: \(tail)\nYour audio is safe in \(dir.lastPathComponent).")
-                notify("Minute failed", "Audio is saved. Open Minute for details.")
+                phase = .failed("Could not write the minutes: \(tail)\nYour transcript is saved in \(dir.lastPathComponent).")
+                notify("Minute failed", "The transcript is saved. Open Minute for details.")
             }
         }
     }
@@ -281,7 +317,7 @@ final class Recorder: ObservableObject {
               let d = try? JSONDecoder().decode(MoMData.self, from: raw) else { return false }
         session = dir
         apply(d)
-        transcript = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
+        loadTranscript(dir)
         return true
     }
 
@@ -559,6 +595,7 @@ struct PanelView: View {
     var statusText: String {
         switch r.phase {
         case .processing(let s): return s
+        case .transcript: return "Your transcript is ready to check"
         case .review: return "Your minutes are ready to review"
         case .exporting(let s): return s
         case .done: return "Word and PDF are ready"
@@ -572,10 +609,10 @@ struct PanelView: View {
 
 struct StepBar: View {
     let step: Int
-    let titles = ["Record", "Review", "Export"]
+    let titles = ["Record", "Transcript", "Minutes", "Export"]
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(0..<3) { i in
+            ForEach(0..<4) { i in
                 HStack(spacing: 6) {
                     ZStack {
                         Circle().fill(i <= step ? Color.accentColor : Color.secondary.opacity(0.18)).frame(width: 20, height: 20)
@@ -587,7 +624,7 @@ struct StepBar: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Step \(i + 1), \(titles[i])\(i == step ? ", current" : "")")
-                if i < 2 {
+                if i < 3 {
                     Capsule().fill(i < step ? Color.accentColor : Color.secondary.opacity(0.18)).frame(width: 28, height: 2)
                 }
             }
@@ -613,7 +650,8 @@ struct MainWindow: View {
             Group {
                 switch r.step {
                 case 0: StepRecord(r: r)
-                case 1: StepReview(r: r)
+                case 1: StepTranscript(r: r)
+                case 2: StepReview(r: r)
                 default: StepExport(r: r)
                 }
             }
@@ -634,7 +672,7 @@ struct MainWindow: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                if r.step == 1 {
+                if r.step == 2 {
                     Button { showTranscript.toggle() } label: { Label("Transcript", systemImage: "sidebar.right") }
                         .help("Show the transcript to check the minutes against")
                 }
@@ -671,7 +709,7 @@ struct StepRecord: View {
             switch r.phase {
             case .processing(let s):
                 ProgressView().controlSize(.large).padding(.bottom, 4)
-                Text("Writing your minutes").font(.title2.weight(.semibold))
+                Text(r.workTitle).font(.title2.weight(.semibold))
                 Text(s).foregroundStyle(.secondary).contentTransition(.opacity).animation(.default, value: s)
                 Text("Everything stays on this Mac. You can close this window; you'll get a notification.")
                     .font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center).frame(maxWidth: 380)
@@ -797,7 +835,7 @@ struct MinuteApp: App {
                 case .recording:
                     HStack(spacing: 4) { Image(nsImage: redDot); Text(clock(r.elapsed)).monospacedDigit() }
                 case .processing, .exporting: Image(systemName: "ellipsis.circle")
-                case .review: Image(systemName: "doc.text")
+                case .review, .transcript: Image(systemName: "doc.text")
                 default: Image(systemName: "waveform.circle")
                 }
             }

@@ -178,6 +178,23 @@ def collapse_loops(t: str) -> str:
     return t
 
 HALLU = re.compile(r"^(thanks? for watching|thank you\.?|terima kasih\.?|subtitles? by.*|\W*)$", re.I)
+# things Whisper invents from silence or noise (training-data credits and calls to action, in many languages)
+HALLU_ANY = re.compile(r"sous-titr|société radio|radio-canada|amara\.org|subtitles? (by|from)|untertitel|ondertitel|sottotitoli|legendas? |"
+                       r"thanks? for watching|thank you for watching|terima kasih (telah|sudah|atas) (menonton|tontonan)|please subscribe|like and subscribe|"
+                       r"subscribe to|jangan lupa (subscribe|like)|www\.|\.com\b|♪|\[(music|musik|applause|tepuk tangan)\]", re.I)
+
+def drop_hallucinations(segs):
+    """Remove text Whisper made up from quiet noise: known credit lines, and short lines repeated again and again on one track."""
+    from collections import Counter
+    segs = [x for x in segs if not HALLU_ANY.search(x[2])]
+    norm = lambda t: re.sub(r"\W+", " ", t.lower()).strip()
+    cnt = Counter((x[1], norm(x[2])) for x in segs)
+    out = []
+    for x in segs:
+        if 4 <= len(x[2].split()) <= 12 and cnt[(x[1], norm(x[2]))] >= 3:
+            log("dropped repeated line: " + x[2]); continue
+        out.append(x)
+    return out
 
 def whisper(chunk: Path, lang: str):
     out = chunk.with_suffix("")
@@ -195,7 +212,7 @@ def transcribe(label, wav, tmp, total_done, n_total):
     for i in range(len(cuts) - 1):
         a, b = cuts[i], cuts[i + 1]
         stage(f"Transcribing {label}: {int(a // 60)} of {max(1, round(total / 60))} min")
-        if b - a < 0.8 or mean_volume(wav, a, b) < -50: continue
+        if b - a < 0.8 or mean_volume(wav, a, b) < (-45 if label == "Others" else -50): continue
         ch = tmp / f"{label}_{i:04d}.wav"
         run(["ffmpeg", "-y", "-ss", str(a), "-t", str(b - a), "-i", str(wav), "-c", "copy", str(ch)])
         j = whisper(ch, "auto")
@@ -204,8 +221,21 @@ def transcribe(label, wav, tmp, total_done, n_total):
         for s in j.get("transcription", []):
             t = collapse_loops(s["text"].strip())
             if not t or HALLU.match(t): continue
-            segs.append((a + s["offsets"]["from"] / 1000, label, t))
+            segs += split_lines(a + s["offsets"]["from"] / 1000, a + s["offsets"]["to"] / 1000, label, t)
     return segs
+
+def split_lines(start, end, label, text, maxlen=170):
+    """Whisper returns long blocks; cut them at sentence ends into caption-sized lines, timing each by its share of the block."""
+    parts = [x for x in re.split(r"(?<=[.!?…])\s+", text) if x]
+    groups, cur = [], ""
+    for x in parts:
+        if cur and len(cur) + 1 + len(x) > maxlen: groups.append(cur); cur = x
+        else: cur = (cur + " " + x).strip()
+    if cur: groups.append(cur)
+    total = max(1, sum(len(g) for g in groups)); done = 0; out = []
+    for g in groups:
+        out.append((start + (end - start) * done / total, label, g)); done += len(g)
+    return out
 
 def drop_echo(segs):
     """When the meeting plays through speakers the mic hears it too: drop 'Me' lines that repeat a nearby 'Others' line."""
@@ -515,6 +545,15 @@ def make_mom(transcript: str, session: Path):
             if len(fixed.get("topics", [])) >= len(data["topics"]): data["topics"] = fixed["topics"]
     except Exception as e:
         log("completeness pass skipped: " + repr(e))
+    if not [t for t in data.get("topics", []) if t.strip()]:
+        # a lecture, seminar or informal talk can have no decisions, but the minutes must still say what was discussed
+        try:
+            stage("Summarising the discussion")
+            out = json.loads(chat("You write the 'topics discussed' list of minutes of meeting. Whatever the meeting was (a decision meeting, a talk, a seminar, a casual chat), list the main points that were actually said, one numbered item per point, each one or two clear sentences in the same language as the transcript, third person, formal. Never invent anything, never return an empty list. " + lang,
+                f"TRANSCRIPT:\n{transcript}", {"type": "object", "required": ["topics"], "properties": {"topics": {"type": "array", "items": {"type": "string"}}}}))
+            data["topics"] = [t.strip() for t in out.get("topics", []) if t.strip()]
+        except Exception as e:
+            log("topic fallback failed: " + repr(e))
     data["topics"] = [re.sub(r"\s*\[([^\]]*)\]", r" \1", t).replace("  ", " ").strip() for t in data.get("topics", [])]   # never leak the date hints
     me = CFG["my_name"]
     if me and me.lower() not in [x.lower() for x in data.get("telkomsel_names", [])]:
@@ -968,6 +1007,14 @@ def main():
         tp = make_generic_template(logo, org)
         print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"]}), flush=True)
         return
+    if args[0] == "--draft":
+        d = Path(args[1]).expanduser().resolve()
+        transcript = re.sub(r"^# Transcript\s*", "", (d / "transcript.md").read_text()).strip()
+        if len(transcript) < 20: raise SystemExit("The transcript is empty. Add some text first.")
+        ensure_ollama()
+        data = make_mom(transcript, d)
+        (d / "MoM.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        print("DONE", d, flush=True); return
     d, tracks = prepare(Path(args[0]).expanduser().resolve())
     if not tracks: raise SystemExit("No audio found in " + str(d))
     if not Path(CFG["whisper_model"]).exists(): raise SystemExit("Whisper model missing: " + CFG["whisper_model"])
@@ -985,15 +1032,18 @@ def main():
         for label, _ in tracks:
             segs += transcribe(label, wavs[label], tmp, 0, len(tracks))
     segs.sort(key=lambda x: x[0])
-    segs = drop_echo(segs)
+    segs = drop_hallucinations(drop_echo(segs))
     lines, prev = [], None
     for s, who, text in segs:
-        if prev and prev[0] == who and s - prev[1] < 8: lines[-1] += " " + text
+        # one line per breath, like a captioned recording: same speaker keeps one line only while there is no pause and it stays short
+        if prev and prev[0] == who and s - prev[1] < 2.5 and not re.search(r"[.!?…][\"')]*$", lines[-1]) and len(lines[-1]) < 220: lines[-1] += " " + text
         else: lines.append(f"[{ts(s)}] {who}: {text}")
         prev = (who, s + 1)
     transcript = "\n".join(lines)
     (d / "transcript.md").write_text("# Transcript\n\n" + transcript + "\n")
     if len(transcript) < 80: raise SystemExit("Transcript is nearly empty. Check microphone / meeting audio levels.")
+    if "--transcript-only" in args:
+        print("DONE", d, flush=True); return
     ensure_ollama()
     data = make_mom(transcript, d)
     (d / "MoM.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))

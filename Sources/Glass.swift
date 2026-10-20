@@ -38,3 +38,11 @@ struct GlassGroup<Content: View>: View {
         if #available(macOS 26, *) { GlassEffectContainer(spacing: spacing) { content } } else { content }
     }
 }
+
+
+extension AnyTransition {
+    /// Steps slide sideways; with Reduce Motion on they simply fade.
+    static func stepSlide(_ reduce: Bool) -> AnyTransition {
+        reduce ? .opacity : .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity))
+    }
+}

@@ -175,6 +175,7 @@ struct LocationPicker: View {
 // MARK: - First-run setup
 
 struct SetupView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var r: Recorder
     @Environment(\.dismiss) private var dismiss
     @StateObject private var mover = StorageMover()
@@ -190,6 +191,8 @@ struct SetupView: View {
     @State private var pdfOK = false
     @State private var pdfBusy = false
     @State private var allowing = false
+    @State private var screenOK = ScreenContext.permitted
+    @State private var calOK = CalendarContext.allowed
     @State private var permError: String?
     private let wordInstalled = FileManager.default.fileExists(atPath: "/Applications/Microsoft Word.app")
 
@@ -211,7 +214,7 @@ struct SetupView: View {
                     }
                 }
                 .id(step)
-                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                .transition(.stepSlide(reduceMotion))
             }
             .animation(.spring(duration: 0.5, bounce: 0.1), value: step)
             .clipped()
@@ -281,6 +284,8 @@ struct SetupView: View {
             permissionRow(title: "Meeting audio", detail: "What the other people say in Teams, Zoom or Meet.", symbol: "speaker.wave.2.fill", done: sysOK, action: "Allow") { Task { await allowSystemAudio() } }
             permissionRow(title: "Your meetings folder", detail: Storage.root.path.replacingOccurrences(of: home.path, with: "~"), symbol: "folder.fill", done: folderOK, action: "Allow") { allowFolder() }
             permissionRow(title: "Notifications", detail: "Tells you when a transcript or the minutes are ready.", symbol: "bell.badge.fill", done: notifOK, action: "Allow") { Task { await allowNotifications() } }
+            permissionRow(title: "Shared screens (optional)", detail: "Reads slides and shared screens in online meetings, on this Mac, so the minutes know what was shown. macOS may ask you to reopen Minute.", symbol: "rectangle.on.rectangle", done: screenOK, action: "Allow") { allowScreen() }
+            permissionRow(title: "Calendar (optional)", detail: "Names the meeting and spells invitees' names right. Read only.", symbol: "calendar", done: calOK, action: "Allow") { Task { await allowCalendar() } }
             if wordInstalled {
                 permissionRow(title: "PDF export with Word", detail: pdfBusy ? "Checking with Word…" : "Lets Minute make the PDF through Word. Word may ask for folder access too.", symbol: "doc.richtext.fill", done: pdfOK, action: "Allow") { Task { await allowPDF() } }
             }
@@ -306,6 +311,7 @@ struct SetupView: View {
         sysOK = UserDefaults.standard.bool(forKey: "sysAudioOK")
         pdfOK = UserDefaults.standard.bool(forKey: "pdfOK")
         folderOK = (try? FileManager.default.contentsOfDirectory(atPath: Storage.root.path)) != nil
+        screenOK = ScreenContext.permitted; calOK = CalendarContext.allowed
         let n = await UNUserNotificationCenter.current().notificationSettings()
         notifOK = n.authorizationStatus == .authorized || n.authorizationStatus == .provisional
     }
@@ -321,6 +327,9 @@ struct SetupView: View {
             t.stop(); sysOK = true; UserDefaults.standard.set(true, forKey: "sysAudioOK")
         } catch { sysOK = false; permError = "Meeting audio could not start: \(error.localizedDescription). Allow it in System Settings > Privacy & Security > Screen & System Audio Recording." }
     }
+
+    func allowScreen() { screenOK = ScreenContext.request() || ScreenContext.permitted }
+    func allowCalendar() async { calOK = await CalendarContext.request() }
 
     func allowFolder() {
         if let e = Storage.verifyWritable(Storage.root) { folderOK = false; permError = e } else { folderOK = true }
@@ -344,6 +353,8 @@ struct SetupView: View {
         if !sysOK { await allowSystemAudio() }
         if !folderOK { allowFolder() }
         if !notifOK { await allowNotifications() }
+        if !calOK { await allowCalendar() }
+        if !screenOK { allowScreen() }
         if wordInstalled && !pdfOK { await allowPDF() }
     }
 
@@ -370,6 +381,10 @@ struct SettingsView: View {
     @State private var deleteAudio = Storage.deleteAudio
     @State private var count = Storage.meetingFolders(in: Storage.root).count
     @State private var tplVersion = 0
+    @State private var floating = FloatingControl.enabled
+    @State private var readScreens = ScreenContext.enabled
+    @State private var thumbs = ScreenContext.keepThumbnails
+    @State private var useCalendar = CalendarContext.enabled
     @State private var terms = (try? String(contentsOf: home.appendingPathComponent(".mom/terms.txt"), encoding: .utf8)) ?? ""
 
     var changed: Bool { choice.standardizedFileURL.path != Storage.root.standardizedFileURL.path }
@@ -427,10 +442,24 @@ struct SettingsView: View {
             } header: { Text("Privacy") }
 
             Section {
+                Toggle("Show a floating control during online meetings", isOn: $floating).onChange(of: floating) { _, v in FloatingControl.enabled = v }
+                Text("A small pill appears when Teams, Zoom, Meet, Webex or similar is using your microphone, with hold-to-record and hold-to-stop. It is hidden from screen sharing.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Read shared screens for context", isOn: $readScreens).onChange(of: readScreens) { _, v in ScreenContext.enabled = v }
+                Text("While recording an online meeting, Minute reads the text on the meeting window (slides, documents) on this Mac and gives it to the minutes writer. Nothing is uploaded.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Keep a small picture of each shared screen", isOn: $thumbs).onChange(of: thumbs) { _, v in ScreenContext.keepThumbnails = v }.disabled(!readScreens)
+                if readScreens && !ScreenContext.permitted {
+                    Label("Screen Recording is not allowed yet. Turn it on for Minute in System Settings > Privacy & Security.", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
+                Toggle("Use my calendar to name meetings", isOn: $useCalendar).onChange(of: useCalendar) { _, v in CalendarContext.enabled = v }
+            } header: { Text("Online meetings") }
+
+            Section {
+                Button(r.diagnosticsCopied ? "Copied to the Clipboard" : "Copy Diagnostics") { r.copyDiagnostics() }
+                Text("Copies the app and Mac details and the latest log lines (your name and home folder are removed) so you can paste them in a message when something goes wrong.").font(.caption).foregroundStyle(.secondary)
                 Button("Welcome Tour & Setup…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
-            } header: { Text("Setup") }
+            } header: { Text("Help") }
         }
-        .formStyle(.grouped).frame(width: 560, height: 820)
+        .formStyle(.grouped).frame(width: 580, height: 860)
         .onAppear { choice = Storage.root; count = Storage.meetingFolders(in: Storage.root).count }
     }
 }

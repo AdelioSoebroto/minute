@@ -6,7 +6,7 @@ Any single audio/video file also works; it is treated as one track.
 Outputs next to the audio: transcript.md, MoM.md, MoM.docx.
 Config: ~/.mom/config.json (optional), template: ~/.mom/template.md
 """
-import json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
+import json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -195,7 +195,7 @@ def apply_corrections(text, mapping=None):
 TERMS_SCHEMA = {"type": "object", "required": ["replacements"], "properties": {"replacements": {"type": "array", "items": {
     "type": "object", "required": ["heard", "correct"], "properties": {"heard": {"type": "string"}, "correct": {"type": "string"}}}}}}
 
-def fix_terms(transcript):
+def fix_terms(transcript, extra=None):
     """Ask the local model which words in the transcript are misheard brands, restaurants or places from the lexicon; apply only safe, verbatim swaps."""
     lex = lexicon()
     if not lex: return transcript
@@ -204,8 +204,8 @@ def fix_terms(transcript):
         "You fix misheard proper nouns in a speech-to-text transcript that mixes English and Bahasa Indonesia (formal and slang). You get a list of KNOWN NAMES: brands, restaurants, shops, apps, banks, places, institutions and work terms common in Indonesia. "
         "Return the replacements needed where a word or short phrase in the transcript is clearly a misheard or misspelled version of a known name, judged by how it sounds and by the context (for example 'TZ' or 'tizi' said about a tea drink means 'Teazzi'; 'indo maret' means 'Indomaret'; 'tokped' is slang, leave it). "
         "'heard' must appear in the transcript exactly as written. 'correct' must be copied exactly from the list. Do not touch ordinary words, people's names, or anything you are not sure about. Return an empty list if nothing needs fixing.",
-        "KNOWN NAMES: " + "; ".join(lex)[:4500] + "\n\nTRANSCRIPT:\n" + transcript, TERMS_SCHEMA))
-    canon = {x.lower(): x for x in lex}
+        "KNOWN NAMES: " + "; ".join(lex)[:4500] + ("\nALSO SEEN ON SCREEN DURING THE MEETING (treat as known names too): " + "; ".join(extra) if extra else "") + "\n\nTRANSCRIPT:\n" + transcript, TERMS_SCHEMA))
+    canon = {x.lower(): x for x in lex + list(extra or [])}
     pairs = {}
     for r in out.get("replacements", [])[:12]:
         h, c = (r.get("heard") or "").strip(), canon.get((r.get("correct") or "").strip().lower())
@@ -338,6 +338,38 @@ def install_tools():
         if _stream([BREW, "install", pkg], f"Installing {pkg}", {**os.environ, "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ENV_HINTS": "1"}):
             raise SystemExit(f"Could not install {pkg}.")
     print("DONE", flush=True)
+
+# ---------- context beyond the audio: calendar event and what was shown on screen ----------
+def load_json(p, default):
+    try: return json.loads(Path(p).read_text())
+    except Exception: return default
+
+def screen_events(session: Path):
+    return [e for e in load_json(session / "screens.json", []) if isinstance(e, dict) and (e.get("text") or "").strip()]
+
+def context_block(session: Path, limit=2600):
+    """Extra facts for the writing prompts: the calendar entry the meeting was recorded for, and text that was on screen (slides, documents) with times."""
+    parts = []
+    cal = load_json(session / "meeting.json", {})
+    if cal.get("title"): parts.append(f"CALENDAR EVENT: \"{cal['title']}\"" + (f"; invited: {', '.join(cal.get('attendees', [])[:25])}" if cal.get("attendees") else "")
+                                      + ". Use the title for the agenda if it fits what was discussed; the invited names are spelling references, not proof of attendance.")
+    ev = screen_events(session)
+    if ev:
+        used, lines = 0, []
+        for e in ev:
+            t = re.sub(r"\s+", " ", e["text"]).strip()[:420]
+            line = f"[{ts(e.get('t', 0))}] {t}"
+            if used + len(line) > limit: break
+            lines.append(line); used += len(line)
+        parts.append("TEXT SHOWN ON SCREEN DURING THE MEETING (slides or documents, with times; use it to spell names, products and numbers right and to understand what 'ini', 'yang ini' or 'this' refers to; do not copy it wholesale): " + " | ".join(lines))
+    return "\n".join(parts)
+
+def screen_terms(session: Path):
+    """Distinctive words from on-screen text, offered to the name fixer as spelling references."""
+    words = {}
+    for e in screen_events(session):
+        for w in re.findall(r"\b[A-Z][A-Za-z0-9]{2,}\b|\b[A-Z]{2,6}\b", e["text"]): words[w] = words.get(w, 0) + 1
+    return [w for w, _ in sorted(words.items(), key=lambda kv: -kv[1])[:60]]
 
 def whisper_prompt():
     terms = ", ".join(glossary()[-40:])
@@ -491,7 +523,7 @@ def chat(system, user):
                        "options": {"num_ctx": CFG["ctx"], "temperature": 0.2},
                        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}).encode()
     req = urllib.request.Request("http://127.0.0.1:11434/api/chat", body, {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=3600) as r:
+    with urllib.request.urlopen(req, timeout=900) as r:
         txt = json.load(r)["message"]["content"]
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
 
@@ -500,8 +532,8 @@ Return JSON with:
 - agenda: short meeting title, in the form "<Category> - <Subject>" using words actually said in the meeting, never copied from the examples.
 - telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. {internal} = internal staff; third party = vendors or other companies, and anyone said to be 'from' or 'dari' a company other than {internal} belongs under third party with that company. If unsure, put in telkomsel_names. Never guess names. Never list the labels Me, Others or Speaker as people.
 - telkomsel_unit / third_party_company: unit or company name if stated, else "".
-- topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. Merge only true duplicates; never drop a decision, action item, owner, deadline or number: every one that the transcript contains must appear in the topics. Keep common English business words as spoken (follow up, deploy, approval, change request); never translate them literally. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
-'Me' is the person who recorded ({me}); 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording. Never write Me, Others or Speaker in the output: use the person's real name, or 'peserta rapat' when unknown.
+- topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. Never collapse several distinct points, blockers, decisions or actions into one item: write one item per distinct point (a short meeting usually has 3 to 8). Merge only true duplicates. Always keep who is responsible (by name), the teams or departments involved (for example finance, creative, vendor) and the deliverables (for example copy, visual, report). Never drop a decision, action item, owner, deadline or number: every one that the transcript contains must appear in the topics. Keep common English business words as spoken (follow up, deploy, approval, change request); never translate them literally. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
+'Me' is the person who recorded ({me}); 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording. Lines labelled with a person's name instead (for example 'Budi:') are that person speaking. Never write Me, Others or Speaker in the output: use the person's real name, or 'peserta rapat' when unknown.
 Style examples of topics (match their tone and level of detail):
 {examples}
 {lang}"""
@@ -521,7 +553,7 @@ def chat(system, user, schema=None):
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     if schema: payload["format"] = schema
     req = urllib.request.Request("http://127.0.0.1:11434/api/chat", json.dumps(payload).encode(), {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=3600) as r:
+    with urllib.request.urlopen(req, timeout=900) as r:
         txt = json.load(r)["message"]["content"]
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
 
@@ -624,7 +656,7 @@ def analyse(transcript: str, meta: str):
               "Understand slang and casual wording using this lexicon (said = meaning):\n" + slang_lines() + "\n"
               "Do the following:\n- Ignore filler, small talk and jokes unless they carry a decision.\n"
               "- Work out real intent: 'gas aja', 'oke sip', 'acc' mean agreement; 'nanti gue kabarin' is a commitment by the speaker; 'kayaknya', 'mungkin' mean not yet decided.\n"
-              "- Who said it: " + "'Me' is the person who recorded the meeting, " + CFG["my_name"] + "; 'Others' are the remaining participants whose names are only known if said aloud. "
+              "- Who said it: " + "'Me' is the person who recorded the meeting, " + CFG["my_name"] + "; 'Others' are the remaining participants whose names are only known if said aloud; a line labelled with a person's name is that person. "
               "In your output never write the words Me, Others or Speaker: use " + CFG["my_name"] + " for Me, the person's name if it was said, or 'peserta rapat' / 'pihak terkait' when unknown.\n"
               "- Assign an owner only if a person is named or clearly the speaker; otherwise 'Unassigned'.\n"
               "- Convert relative dates (besok, lusa, minggu depan, nanti sore) to absolute dates using the meeting date given; if unclear write 'TBD'.\n"
@@ -659,6 +691,7 @@ def make_mom(transcript: str, session: Path):
         transcript = "\n\n".join(notes)
     n0 = session.name
     meta = f"Recorded {n0[:10]} at {n0[11:13]}:{n0[13:15]}"
+    extra = context_block(session)
     try:
         import datetime
         day0 = datetime.date(int(n0[:4]), int(n0[5:7]), int(n0[8:10]))
@@ -667,6 +700,7 @@ def make_mom(transcript: str, session: Path):
         cal = "; ".join(f"{hari[(day0 + datetime.timedelta(days=k)).weekday()]} {(day0 + datetime.timedelta(days=k)).day} {bulan[(day0 + datetime.timedelta(days=k)).month - 1]} {(day0 + datetime.timedelta(days=k)).year}" + (" (hari ini)" if k == 0 else " (besok)" if k == 1 else "") for k in range(0, 15))
         meta += f" ({hari[day0.weekday()]}). Calendar, use it to turn weekday names and relative dates into exact dates, the next occurrence of a weekday is the first one listed: {cal}"
     except Exception: pass
+    if extra: meta += "\n" + extra
     notes = ""
     try:
         import datetime
@@ -729,13 +763,15 @@ def make_mom(transcript: str, session: Path):
             if len(fixed.get("topics", [])) >= len(data["topics"]): data["topics"] = fixed["topics"]
     except Exception as e:
         log("completeness pass skipped: " + repr(e))
-    if not [t for t in data.get("topics", []) if t.strip()]:
-        # a lecture, seminar or informal talk can have no decisions, but the minutes must still say what was discussed
+    few = len([t for t in data.get("topics", []) if t.strip()]) <= 1 and len(transcript.split()) > 60
+    if few or not [t for t in data.get("topics", []) if t.strip()]:
+        # a lecture, seminar or informal talk can have no decisions, but the minutes must still say what was discussed (and not squeeze several points into one)
         try:
             stage("Summarising the discussion")
             out = json.loads(chat("You write the 'topics discussed' list of minutes of meeting. Whatever the meeting was (a decision meeting, a talk, a seminar, a casual chat), list the main points that were actually said, one numbered item per point, each one or two clear sentences in the same language as the transcript, third person, formal. Never invent anything, never return an empty list. " + lang,
                 f"TRANSCRIPT:\n{transcript}", {"type": "object", "required": ["topics"], "properties": {"topics": {"type": "array", "items": {"type": "string"}}}}))
-            data["topics"] = [t.strip() for t in out.get("topics", []) if t.strip()]
+            more = [t.strip() for t in out.get("topics", []) if t.strip()]
+            if len(more) > len([t for t in data.get("topics", []) if t.strip()]): data["topics"] = more
         except Exception as e:
             log("topic fallback failed: " + repr(e))
     data["topics"] = [re.sub(r"\s*\[([^\]]*)\]", r" \1", t).replace("  ", " ").strip() for t in data.get("topics", [])]   # never leak the date hints
@@ -1149,18 +1185,43 @@ def single_run():
     """Only one heavy job at a time: queued runs wait instead of piling up and heating the Mac."""
     import fcntl
     f = open(HOME / ".mom/run.lock", "w")
-    fcntl.flock(f, fcntl.LOCK_EX)
+    try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        stage("Waiting for the previous job to finish")
+        fcntl.flock(f, fcntl.LOCK_EX)
     return f
+
+def diagnostics(folder=None):
+    home = str(HOME)
+    out = ["Minute diagnostics", f"python {sys.version.split()[0]}", f"macOS {sh(['/usr/bin/sw_vers', '-productVersion']).strip()}"]
+    try: out.append("doctor: " + json.dumps(doctor()))
+    except Exception as e: out.append("doctor failed: " + repr(e))
+    out.append("config: " + json.dumps({k: v for k, v in CFG.items() if k not in ("my_name", "my_unit")}))
+    if folder:
+        f = Path(folder) / "mom.log"
+        out.append(f"--- {Path(folder).name}/mom.log (last 60 lines)")
+        if f.exists(): out += f.read_text().splitlines()[-60:]
+        out.append("files: " + ", ".join(sorted(p.name for p in Path(folder).iterdir())))
+    return "\n".join(out).replace(home, "~")
+
+def _on_term(sig, frm):
+    try: os.killpg(os.getpgrp(), signal.SIGKILL)
+    except Exception: os._exit(1)
 
 def main():
     global LOGF
     args = sys.argv[1:]
+    try: os.setpgrp()
+    except Exception: pass
+    signal.signal(signal.SIGTERM, _on_term)
     if len(args) >= 2 and not args[0].startswith("--"):
         pass
     for a in args:
         if not a.startswith("--") and Path(a).expanduser().is_dir():
             LOGF = Path(a).expanduser() / "mom.log"; break
-    _lock = single_run()
+    (HOME / ".mom").mkdir(parents=True, exist_ok=True)
+    LIGHT = {"--doctor", "--hardware", "--diagnostics", "--get-whisper", "--install-tools", "--install-docx", "--pull-model", "--test-pdf", "--make-template"}
+    _lock = None if args and args[0] in LIGHT else single_run()      # quick checks and installs never wait behind a long job
     if args and args[0] == "--ask":
         return ask(Path(args[1]).expanduser().resolve(), " ".join(args[2:]))
     if not args: raise SystemExit(__doc__)
@@ -1177,6 +1238,8 @@ def main():
         print("HARDWARE " + json.dumps({"chip": chip, "ram": pr["ram"], "tier": pr["tier"], "model": model, "installed": have,
                                         "ollama": bool(shutil.which("ollama")), "size_gb": 5.2 if model.endswith("8b") else 2.6}), flush=True)
         return
+    if args[0] == "--diagnostics":
+        print(diagnostics(args[1] if len(args) > 1 else None)); return
     if args[0] == "--test-pdf":
         # asks macOS for the Word automation and file-access permissions once, during setup, so exports never interrupt later
         import docx
@@ -1211,13 +1274,13 @@ def main():
     if args[0] == "--learn-template":
         org = args[args.index("--org") + 1] if "--org" in args else ""
         tp = learn_template(Path(args[1]).expanduser().resolve(), org=org)
-        print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"]}), flush=True)
+        print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"], "topics": bool(tp.get("has_examples") or tp.get("topic_heading", -1) >= 0)}), flush=True)
         unload(); return
     if args[0] == "--make-template":
         org = args[args.index("--org") + 1] if "--org" in args else ""
         logo = Path(args[args.index("--logo") + 1]).expanduser() if "--logo" in args else None
         tp = make_generic_template(logo, org)
-        print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"]}), flush=True)
+        print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"], "topics": bool(tp.get("has_examples") or tp.get("topic_heading", -1) >= 0)}), flush=True)
         return
     if args[0] == "--draft":
         d = Path(args[1]).expanduser().resolve()
@@ -1257,7 +1320,7 @@ def main():
     transcript = apply_corrections("\n".join(lines))
     if len(transcript) >= 80:
         try:
-            ensure_ollama(); transcript = fix_terms(transcript)
+            ensure_ollama(); transcript = fix_terms(transcript, screen_terms(d))
         except (Exception, SystemExit) as e:
             log("name check skipped: " + repr(e))
     (d / "transcript.md").write_text("# Transcript\n\n" + transcript + "\n")

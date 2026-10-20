@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>id</string></array>
 <key>CFBundleIdentifier</key><string>local.minute.app</string>
 <key>CFBundleIconFile</key><string>Minute</string>
 <key>CFBundleName</key><string>Minute</string>
@@ -10,9 +12,11 @@
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.2</string>
+<key>NSScreenCaptureUsageDescription</key><string>While you record an online meeting, Minute reads the text on the meeting window (slides and shared screens) on this Mac, so the minutes use that context. Images are not kept unless you choose to.</string>
 <key>NSMicrophoneUsageDescription</key><string>Minute records your voice in meetings so it can write the minutes. Audio stays on this Mac.</string>
 <key>NSAudioCaptureUsageDescription</key><string>Minute records the meeting audio playing on this Mac so it can write the minutes. Audio stays on this Mac.</string>
 <key>NSAppleEventsUsageDescription</key><string>Minute asks Microsoft Word to turn your minutes into a PDF.</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Minute reads the event that is running when you record, to name the meeting and spell the invited names right. It never changes your calendar.</string>
 <key>NSDocumentsFolderUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
 <key>NSDesktopFolderUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
 <key>NSDownloadsFolderUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>

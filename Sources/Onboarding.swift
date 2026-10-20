@@ -171,6 +171,7 @@ struct WelcomePage: View {
 // MARK: - Quick tour
 
 struct TourPages: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var finish: () -> Void
     var back: () -> Void
     @State private var page = 0
@@ -189,7 +190,7 @@ struct TourPages: View {
                     }
                 }
                 .id(page)
-                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                .transition(.stepSlide(reduceMotion))
             }
             .animation(.spring(duration: 0.5, bounce: 0.1), value: page)
             .clipped()

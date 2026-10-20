@@ -47,6 +47,13 @@ struct HardwareInfo: Decodable {
 
 // MARK: - Choosing a template
 
+struct Found: Equatable {
+    let slots: [String], org: String, topics: Bool
+    static let names: [(String, String)] = [("agenda", "Meeting title"), ("date", "Date"), ("time", "Time"), ("internal_names", "Your participants"),
+                                            ("internal_unit", "Your unit"), ("external_names", "Guests"), ("external_company", "Guest company")]
+    var missingKey: [String] { Found.names.map(\.0).filter { !slots.contains($0) && ["agenda", "date", "time"].contains($0) } }
+}
+
 struct TemplatePicker: View {
     enum Kind { case mine, clean }
     var showSkip = false
@@ -60,8 +67,44 @@ struct TemplatePicker: View {
     @State private var stage = ""
     @State private var error: String?
     @State private var targeted = false
+    @State private var found: Found?
 
     var body: some View {
+        if let f = found { result(f) } else { picker }
+    }
+
+    private func result(_ f: Found) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(f.org.isEmpty ? "Template ready" : "Template ready · \(f.org)", systemImage: "checkmark.seal.fill").font(.headline).foregroundStyle(.green)
+            Text("Here is what Minute will fill in:").font(.callout).foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                ForEach(Found.names, id: \.0) { key, title in
+                    HStack {
+                        Image(systemName: f.slots.contains(key) ? "checkmark.circle.fill" : "minus.circle").foregroundStyle(f.slots.contains(key) ? Color.green : .secondary)
+                        Text(title); Spacer()
+                        if !f.slots.contains(key) { Text("not in this template").font(.caption).foregroundStyle(.secondary) }
+                    }.font(.callout)
+                }
+                HStack {
+                    Image(systemName: f.topics ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundStyle(f.topics ? Color.green : .orange)
+                    Text("Topics discussed"); Spacer()
+                    if !f.topics { Text("added at the end").font(.caption).foregroundStyle(.secondary) }
+                }.font(.callout)
+            }
+            .padding(12).glass(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            if !f.missingKey.isEmpty {
+                Label("Minute could not find where \(f.missingKey.map { $0 == "agenda" ? "the title" : $0 }.joined(separator: " or ")) goes, so it will be left out. Choose another file if that is wrong.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button("Choose Another") { found = nil }.glassButton().controlSize(.large)
+                Spacer()
+                Button("Looks Right") { onDone() }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    private var picker: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 choice("doc.text.magnifyingglass", "Use my template", "Minute reads your Word file and fills it in.", .mine)
@@ -150,7 +193,11 @@ struct TemplatePicker: View {
         Task {
             let (code, out) = await runMom(args, full: true) { s in Task { @MainActor in stage = s + "…" } }
             busy = false
-            if code == 0, out.contains("TEMPLATE ") { Haptic.tick(); onDone() }
+            if code == 0, let line = out.split(separator: "\n").last(where: { $0.hasPrefix("TEMPLATE ") }),
+               let d = line.dropFirst(9).data(using: .utf8), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                Haptic.tick()
+                found = Found(slots: j["found"] as? [String] ?? [], org: j["org"] as? String ?? "", topics: j["topics"] as? Bool ?? true)
+            }
             else { error = out.split(separator: "\n").last.map(String.init) ?? "Could not read this template." }
         }
     }

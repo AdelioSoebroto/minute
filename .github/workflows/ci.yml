@@ -1,0 +1,13 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install python-docx
+        run: python3 -m pip install --user python-docx
+      - name: Pipeline and app logic tests
+        run: ./build.sh test
+      - name: Build the app
+        run: ./build.sh

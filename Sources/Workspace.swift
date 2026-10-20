@@ -16,6 +16,7 @@ final class MeetingEditor: ObservableObject {
     @Published var topics: [Topic] = [] { didSet { touch() } }
     @Published var tLines: [TLine] = [] { didSet { touch() } }
     @Published var hasMinutes = false
+    @Published var screenEvents: [ScreenEvent] = []
     @Published var busy: String?
     @Published var error: String?
     @Published var savedAt: Date?
@@ -29,6 +30,7 @@ final class MeetingEditor: ObservableObject {
         loading = true; defer { loading = false }
         let tr = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
         tLines = TLine.parse(tr); loadedTranscript = TLine.serialize(tLines)
+        screenEvents = ScreenEvent.load(from: dir)
         if let raw = try? Data(contentsOf: dir.appendingPathComponent("MoM.json")), let d = try? JSONDecoder().decode(MoMData.self, from: raw) {
             agenda = d.agenda; date = d.date; time = d.time
             telkNames = d.telkomsel_names.joined(separator: "\n"); telkUnit = d.telkomsel_unit
@@ -157,7 +159,7 @@ struct MeetingWorkspace: View {
                     .buttonStyle(.borderless).foregroundStyle(showAsk ? Color.accentColor : .secondary)
                     .disabled(editor.tLines.isEmpty).help("Ask a question about this meeting")
             }.padding(.horizontal, 16).padding(.top, 10)
-            TranscriptPane(lines: $editor.tLines, dir: meeting.dir)
+            TranscriptPane(lines: $editor.tLines, dir: meeting.dir, events: editor.screenEvents)
             if showAsk { askBar }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -220,7 +222,7 @@ struct MeetingWorkspace: View {
             HStack {
                 Image(systemName: "sparkles").foregroundStyle(.secondary)
                 TextField("Ask about this meeting…", text: $question).textFieldStyle(.plain).onSubmit { ask() }
-                if !question.isEmpty { Button { ask() } label: { Image(systemName: "arrow.up.circle.fill") }.buttonStyle(.borderless).disabled(asking) }
+                if !question.isEmpty { Button { ask() } label: { Image(systemName: "arrow.up.circle.fill") }.buttonStyle(.borderless).disabled(asking).accessibilityLabel("Ask") }
             }.padding(.horizontal, 14).padding(.vertical, 10).glass(Capsule(), interactive: true)
         }.padding(.horizontal, 14).padding(.vertical, 10)
     }

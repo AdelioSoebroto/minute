@@ -76,6 +76,7 @@ struct MinutesPaper: View {
     let editable: Bool
 
     private let w: CGFloat = 560
+    @Environment(\.undoManager) private var undo
     private var prof: TemplateProfile { TemplateProfile.current }
     private let line = Color.black
 
@@ -135,9 +136,15 @@ struct MinutesPaper: View {
                             TextField("Describe the topic", text: $topics[i].text, axis: .vertical).textFieldStyle(.plain)
                                 .font(PaperAssets.font(12)).padding(.horizontal, 6).padding(.vertical, 4)
                                 .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.07)))
-                            Button { Haptic.tick(); withAnimation(.spring(duration: 0.3)) { _ = topics.remove(at: i) } } label: {
+                            Button {
+                                Haptic.tick()
+                                let removed = topics[i], at = i, binding = $topics
+                                withAnimation(.spring(duration: 0.3)) { _ = topics.remove(at: i) }
+                                undo?.registerUndo(withTarget: UndoBox.shared) { _ in withAnimation { binding.wrappedValue.insert(removed, at: min(at, binding.wrappedValue.count)) } }
+                                undo?.setActionName("Remove Topic")
+                            } label: {
                                 Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
-                            }.buttonStyle(.borderless).help("Remove topic")
+                            }.buttonStyle(.borderless).help("Remove topic").accessibilityLabel("Remove topic \(i + 1)")
                         } else {
                             Text(t.text).font(PaperAssets.font(12)).fixedSize(horizontal: false, vertical: true)
                         }
@@ -243,20 +250,29 @@ func exportedFile(in dir: URL, ext: String) -> URL? {
 final class Library: ObservableObject {
     @Published var meetings: [Meeting] = []
 
+    /// Only folders whose files changed since the last refresh are read again, so a library of hundreds of meetings opens instantly.
+    private var cache: [URL: (stamp: [Date], meeting: Meeting)] = [:]
+
+    private func mtime(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
+
     func refresh() {
         let fm = FileManager.default
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"; f.locale = Locale(identifier: "en_US_POSIX")
         let dirs = (try? fm.contentsOfDirectory(at: momRoot, includingPropertiesForKeys: nil)) ?? []
-        meetings = dirs.compactMap { d in
+        var next: [URL: (stamp: [Date], meeting: Meeting)] = [:]
+        for d in dirs {
             guard (try? d.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
-                  let date = f.date(from: String(d.lastPathComponent.prefix(15))) else { return nil }
+                  let date = f.date(from: String(d.lastPathComponent.prefix(15))) else { continue }
+            let stamp = [mtime(d), mtime(d.appendingPathComponent("MoM.json")), mtime(d.appendingPathComponent("transcript.md"))]
+            if let c = cache[d], c.stamp == stamp { next[d] = c; continue }
             let data = (try? Data(contentsOf: d.appendingPathComponent("MoM.json"))).flatMap { try? JSONDecoder().decode(MoMData.self, from: $0) }
             let tr = (try? String(contentsOf: d.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
-            return Meeting(dir: d, date: date, data: data,
-                           hasDocx: exportedFile(in: d, ext: "docx") != nil,
-                           hasPdf: exportedFile(in: d, ext: "pdf") != nil,
-                           transcript: tr.replacingOccurrences(of: "# Transcript\n\n", with: ""))
-        }.sorted { $0.date > $1.date }
+            next[d] = (stamp, Meeting(dir: d, date: date, data: data,
+                                      hasDocx: exportedFile(in: d, ext: "docx") != nil, hasPdf: exportedFile(in: d, ext: "pdf") != nil,
+                                      transcript: tr.replacingOccurrences(of: "# Transcript\n\n", with: "")))
+        }
+        cache = next
+        meetings = next.values.map(\.meeting).sorted { $0.date > $1.date }
     }
 
     func trash(_ m: Meeting) {
@@ -306,6 +322,7 @@ struct RecordCard: View {
                 }
                 HStack {
                     Button("Open") { showFlow() }.glassButton(prominent: true)
+                    if case .processing = r.phase { Button("Cancel") { r.cancelProcessing() }.glassButton() }
                     if case .failed = r.phase { Button("Dismiss") { r.reset() }.glassButton() }
                     if r.phase == .done { Button("New") { r.reset() }.glassButton() }
                 }
@@ -387,6 +404,7 @@ struct LibraryView: View {
         NavigationSplitView {
             VStack(spacing: 0) {
             RecordCard(r: r)
+            ForEach(r.unfinished, id: \.self) { d in RecoveryCard(r: r, dir: d) }
             List(selection: $selection) {
                 ForEach(groups, id: \.0) { name, items in
                     Section(name) { ForEach(items) { m in row(m).tag(m.id) } }
@@ -437,5 +455,29 @@ struct LibraryView: View {
     @ViewBuilder func detail(_ m: Meeting) -> some View {
         MeetingWorkspace(meeting: m, lib: lib, r: r) { confirmDelete = m }
             .id(m.id)
+    }
+}
+
+
+/// Offered after a crash or power loss: the recording that was running is still on disk.
+struct RecoveryCard: View {
+    @ObservedObject var r: Recorder
+    let dir: URL
+    var when: String {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"; f.locale = Locale(identifier: "en_US_POSIX")
+        return f.date(from: String(dir.lastPathComponent.prefix(15))).map { $0.formatted(date: .abbreviated, time: .shortened) } ?? dir.lastPathComponent
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Unfinished recording", systemImage: "exclamationmark.arrow.circlepath").font(.callout.weight(.semibold))
+            Text("\(when) was cut short. The audio up to that point is safe.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Recover") { r.recover(dir) }.glassButton(prominent: true).disabled(r.isBusy || r.isRecording)
+                Button("Not Now") { r.dismissUnfinished(dir) }.glassButton()
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .glass(RoundedRectangle(cornerRadius: 16, style: .continuous), tint: Color.orange.opacity(0.14))
+        .padding(.horizontal, 12).padding(.bottom, 6)
     }
 }

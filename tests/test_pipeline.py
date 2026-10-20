@@ -204,5 +204,33 @@ class Names(unittest.TestCase):
         self.assertEqual(m.apply_corrections("kasih TZ lagi"), "kasih Teazzi lagi")
 
 
+class Context(unittest.TestCase):
+    def test_calendar_and_screen_text_reach_the_prompt(self):
+        import tempfile
+        d = Path(tempfile.mkdtemp()); (d / "meeting.json").write_text(json.dumps({"title": "Weekly Sync Ads", "attendees": ["Budi", "Siti"]}))
+        (d / "screens.json").write_text(json.dumps([{"t": 75, "text": "Q4 Budget  Teazzi campaign  IDR 450 juta"}, {"t": 90, "text": "  "}]))
+        c = m.context_block(d)
+        self.assertIn("Weekly Sync Ads", c); self.assertIn("Budi", c); self.assertIn("[00:01:15]", c); self.assertIn("IDR 450 juta", c)
+        self.assertEqual(len(m.screen_events(d)), 1)
+        self.assertIn("Teazzi", m.screen_terms(d))
+    def test_no_context_files_is_fine(self):
+        import tempfile
+        self.assertEqual(m.context_block(Path(tempfile.mkdtemp())), "")
+    def test_diagnostics_hide_home_and_name(self):
+        out = m.diagnostics()
+        self.assertNotIn(str(Path.home()), out); self.assertIn("Minute diagnostics", out)
+
+
+class FreshMac(unittest.TestCase):
+    def test_doctor_runs_on_a_home_with_nothing_in_it(self):
+        import subprocess, tempfile, os
+        h = tempfile.mkdtemp()
+        env = {**os.environ, "HOME": h}
+        r = subprocess.run(["/usr/bin/python3", str(Path(__file__).parent.parent / "pipeline" / "mom"), "--doctor"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        d = json.loads(r.stdout.split("DOCTOR ", 1)[1])
+        self.assertFalse(next(i for i in d["items"] if i["id"] == "whisper")["ok"])      # no model in an empty home
+        self.assertIn(d["tier"], ("standard", "light"))
+
 if __name__ == "__main__":
     unittest.main()

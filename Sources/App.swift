@@ -41,8 +41,19 @@ final class Tail: @unchecked Sendable {
     var all: String { get { l.lock(); defer { l.unlock() }; return a } set { l.lock(); a = newValue; l.unlock() } }
 }
 
-/// Runs the `mom` pipeline, forwarding "STAGE:" lines. Returns (exit status, last output line).
-func runMom(_ args: [String], full: Bool = false, stage: @escaping @Sendable (String) -> Void = { _ in }) async -> (Int32, String) {
+/// The one long-running pipeline job (transcribing or writing minutes) that the user can cancel.
+final class MomJob: @unchecked Sendable {
+    static let shared = MomJob()
+    private let l = NSLock()
+    private var process: Process?
+    private var wasCancelled = false
+    func set(_ p: Process) { l.lock(); process = p; wasCancelled = false; l.unlock() }
+    func finish(_ p: Process) -> Bool { l.lock(); defer { l.unlock() }; if process === p { process = nil }; let c = wasCancelled; if c { wasCancelled = false }; return c }
+    func cancel() { l.lock(); wasCancelled = process != nil; let p = process; l.unlock(); p?.terminate() }
+}
+
+/// Runs the `mom` pipeline, forwarding "STAGE:" lines. Returns (exit status, last output line). Exit status 130 means the user cancelled.
+func runMom(_ args: [String], full: Bool = false, cancellable: Bool = false, stage: @escaping @Sendable (String) -> Void = { _ in }) async -> (Int32, String) {
     await withCheckedContinuation { cont in
         let p = Process()
         p.executableURL = URL(fileURLWithPath: momCLI)
@@ -61,8 +72,10 @@ func runMom(_ args: [String], full: Bool = false, stage: @escaping @Sendable (St
         }
         p.terminationHandler = { p in
             out.fileHandleForReading.readabilityHandler = nil
-            cont.resume(returning: (p.terminationStatus, full ? tail.all.trimmingCharacters(in: .whitespacesAndNewlines) : tail.value))
+            let cancelled = cancellable && MomJob.shared.finish(p)
+            cont.resume(returning: (cancelled ? 130 : p.terminationStatus, full ? tail.all.trimmingCharacters(in: .whitespacesAndNewlines) : tail.value))
         }
+        if cancellable { MomJob.shared.set(p) }
         do { try p.run() } catch { cont.resume(returning: (-1, error.localizedDescription)) }
     }
 }
@@ -86,9 +99,15 @@ final class Recorder: ObservableObject {
     @Published var session: URL?
     @Published var transcript = ""
     @Published var tLines: [TLine] = []
+    @Published var screenEvents: [ScreenEvent] = []
     @Published var workTitle = "Transcribing the recording"
     @Published var autoDraft: Bool = UserDefaults.standard.bool(forKey: "autoDraft") { didSet { UserDefaults.standard.set(autoDraft, forKey: "autoDraft") } }
     @Published var lastDir: URL? = Recorder.latestSession()
+    @Published var unfinished: [URL] = []
+    @Published var failedDir: URL?
+    @Published var diagnosticsCopied = false
+    private let screens = ScreenContext()
+    private var tick = 0
 
     // Review form
     @Published var agenda = ""
@@ -176,6 +195,10 @@ final class Recorder: ObservableObject {
     private func begin() {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"
         let dir = momRoot.appendingPathComponent(f.string(from: Date()))
+        let free = DiskGuard.freeBytes(at: momRoot)
+        if free < DiskGuard.stopBytes {
+            phase = .failed("Only \(DiskGuard.text(free)) is free where meetings are saved, which is not enough to record. Free some space or choose another folder in Settings."); return
+        }
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             micSeg = 1; sysSeg = 1; sysHeard = false; warning = nil
@@ -186,8 +209,12 @@ final class Recorder: ObservableObject {
             phase = .failed(error.localizedDescription); return
         }
         session = dir
-        started = Date(); elapsed = 0
+        started = Date(); elapsed = 0; tick = 0
         history = Array(repeating: 0, count: 36)
+        Recovery.markStarted(dir)
+        CalendarContext.writeContext(for: started, into: dir)
+        if mode == .online { screens.begin(dir: dir) { [weak self] in self?.elapsed ?? 0 } }
+        if free < DiskGuard.warnBytes { warning = "Low disk space: \(DiskGuard.text(free)) free. Long meetings may not fit." }
         watchDevices()
         phase = .recording
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a meeting")
@@ -197,6 +224,12 @@ final class Recorder: ObservableObject {
                 self.elapsed = Date().timeIntervalSince(self.started)
                 self.micLevel = self.mic.level.read(); self.sysLevel = self.tap.level.read()
                 self.history.removeFirst(); self.history.append(max(self.micLevel, self.sysLevel))
+                self.tick += 1
+                if self.tick % 300 == 0, let dir = self.session {          // every 30 s: never let a full disk ruin a meeting
+                    let free = DiskGuard.freeBytes(at: dir)
+                    if free < DiskGuard.stopBytes { self.warning = "Disk full. Recording was stopped to keep what you have."; self.stop() }
+                    else if free < DiskGuard.warnBytes { self.warning = "Low disk space: \(DiskGuard.text(free)) free." }
+                }
                 if self.sysLevel > 0.01 { self.sysHeard = true; if self.warning?.hasPrefix("No meeting") == true { self.warning = nil } }
                 if self.mode == .online, !self.sysHeard, self.elapsed > 25, self.warning == nil {
                     self.warning = "No meeting audio heard yet. Check System Audio Recording in System Settings, or that the meeting is playing."
@@ -256,7 +289,8 @@ final class Recorder: ObservableObject {
         guard isRecording, let dir = session else { return }
         timer?.invalidate(); timer = nil
         unwatchDevices()
-        mic.stop(); tap.stop()
+        mic.stop(); tap.stop(); screens.end()
+        Recovery.markFinished(dir)
         if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
         try? "\(mode.rawValue)\n".write(to: dir.appendingPathComponent("mode.txt"), atomically: true, encoding: .utf8)
         draft(dir)
@@ -268,13 +302,17 @@ final class Recorder: ObservableObject {
         workTitle = "Transcribing the recording"
         phase = .processing("Starting…")
         Task {
-            let (code, tail) = await runMom([dir.path, "--transcript-only"]) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
+            let (code, tail) = await runMom([dir.path, "--transcript-only"], cancellable: true) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
             if code == 0 {
                 loadTranscript(dir)
                 let env = ProcessInfo.processInfo.environment
                 if autoDraft || env["MINUTE_AUTODRAFT"] != nil || env["MINUTE_AUTOEXPORT"] != nil { writeMinutes() }
                 else { phase = .transcript; notify("Transcript ready", "Open Minute to check it, then write the minutes.") }
+            } else if code == 130 {
+                failedDir = dir
+                phase = .failed("Stopped. Your recording is saved in \(dir.lastPathComponent); you can transcribe it again any time.")
             } else {
+                failedDir = dir
                 phase = .failed("Could not transcribe the recording: \(tail)\nYour audio is safe in \(dir.lastPathComponent).")
                 notify("Minute failed", "Audio is saved. Open Minute for details.")
             }
@@ -285,6 +323,7 @@ final class Recorder: ObservableObject {
         session = dir
         transcript = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
         tLines = TLine.parse(transcript)
+        screenEvents = ScreenEvent.load(from: dir)
     }
 
     /// Step 2 to 3: save the (possibly corrected) transcript and write the minutes from it.
@@ -297,15 +336,54 @@ final class Recorder: ObservableObject {
         workTitle = "Writing your minutes"
         phase = .processing("Starting…")
         Task {
-            let (code, tail) = await runMom(["--draft", dir.path]) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
+            let (code, tail) = await runMom(["--draft", dir.path], cancellable: true) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
             if code == 0, loadDraft(dir) {
                 phase = .review
                 if ProcessInfo.processInfo.environment["MINUTE_AUTOEXPORT"] != nil { export() }   // test hook
                 notify("Minutes drafted", "Open Minute to review and export.")
+            } else if code == 130 {
+                phase = .transcript
             } else {
+                failedDir = dir
                 phase = .failed("Could not write the minutes: \(tail)\nYour transcript is saved in \(dir.lastPathComponent).")
                 notify("Minute failed", "The transcript is saved. Open Minute for details.")
             }
+        }
+    }
+
+    // MARK: Cancel, retry, recovery, support
+
+    func cancelProcessing() { MomJob.shared.cancel() }
+
+    func retry() {
+        guard let dir = failedDir ?? session else { return }
+        failedDir = nil
+        let tr = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
+        if tr.count > 100 { loadTranscript(dir); writeMinutes() } else { draft(dir) }
+    }
+
+    func checkUnfinished() { unfinished = Recovery.unfinished(in: momRoot, excluding: isRecording ? session : nil) }
+
+    /// A recording that was cut short (crash, power loss): keep what was captured and carry on as if it had been stopped.
+    func recover(_ dir: URL) {
+        Recovery.markFinished(dir)
+        unfinished.removeAll { $0 == dir }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.appendingPathComponent("mode.txt").path) {
+            let m = fm.fileExists(atPath: dir.appendingPathComponent("system.caf").path) ? "Online" : "Onsite"
+            try? "\(m)\n".write(to: dir.appendingPathComponent("mode.txt"), atomically: true, encoding: .utf8)
+        }
+        draft(dir)
+    }
+
+    func dismissUnfinished(_ dir: URL) { Recovery.markFinished(dir); unfinished.removeAll { $0 == dir } }
+
+    func copyDiagnostics() {
+        Task {
+            let (_, out) = await runMom(["--diagnostics"] + [(failedDir ?? session)?.path].compactMap { $0 }, full: true)
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(out, forType: .string)
+            diagnosticsCopied = true
+            try? await Task.sleep(nanoseconds: 2_500_000_000); diagnosticsCopied = false
         }
     }
 
@@ -642,6 +720,7 @@ struct HideTitle: ViewModifier {
 }
 
 struct MainWindow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var r: Recorder
     @State private var showTranscript = false
 
@@ -656,8 +735,7 @@ struct MainWindow: View {
                 }
             }
             .id(r.step)
-            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
-                                    removal: .move(edge: .leading).combined(with: .opacity)))
+            .transition(.stepSlide(reduceMotion))
         }
         .animation(.spring(duration: 0.55, bounce: 0.1), value: r.step)
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -713,9 +791,14 @@ struct StepRecord: View {
                 Text(s).foregroundStyle(.secondary).contentTransition(.opacity).animation(.default, value: s)
                 Text("Everything stays on this Mac. You can close this window; you'll get a notification.")
                     .font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center).frame(maxWidth: 380)
+                Button("Cancel") { r.cancelProcessing() }.glassButton().controlSize(.large).padding(.top, 6)
             case .failed(let m):
                 Hero(symbol: "exclamationmark.triangle", tint: .orange, title: "Something went wrong", subtitle: m)
-                Button("OK") { r.reset() }.controlSize(.large)
+                HStack(spacing: 10) {
+                    Button { r.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }.glassButton(prominent: true)
+                    Button { r.copyDiagnostics() } label: { Label(r.diagnosticsCopied ? "Copied" : "Copy Diagnostics", systemImage: r.diagnosticsCopied ? "checkmark" : "doc.on.doc") }.glassButton()
+                    Button("OK") { r.reset() }.glassButton()
+                }.controlSize(.large)
             case .recording:
                 Hero(symbol: "record.circle", tint: .red, title: "Recording", subtitle: "Use the menu bar icon to stop.")
             default:
@@ -842,7 +925,10 @@ struct MinuteApp: App {
             .onAppear {
                 AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
                 AppDelegate.isBusy = { r.isRecording || r.isBusy }
+                FloatingControl.shared.openApp = { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
                 if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == nil {
+                    FloatingControl.shared.attach(r)
+                    r.checkUnfinished()
                     openWindow(id: Storage.setupDone ? "library" : "setup"); NSApp.activate(ignoringOtherApps: true)   // first launch: setup; afterwards: the main window
                 }
                 if ProcessInfo.processInfo.environment["MINUTE_SELFTEST"] != nil { r.selfTestSystemAudio(); return }
@@ -869,6 +955,30 @@ struct MinuteApp: App {
             .windowResizability(.contentMinSize)
             .windowToolbarStyle(.unified)
             .defaultSize(width: 860, height: 760)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button(r.isRecording ? "Stop Recording…" : "Start Recording…") { MinuteApp.confirmToggle(r) { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) } }
+                    .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(r.isBusy)
+                Divider()
+                Button("All Meetings") { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }.keyboardShortcut("l", modifiers: .command)
+                Button("Current Recording") { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }.keyboardShortcut("0", modifiers: .command)
+            }
+            CommandGroup(after: .help) {
+                Button("Welcome Tour & Setup…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
+                Button(r.diagnosticsCopied ? "Diagnostics Copied" : "Copy Diagnostics") { r.copyDiagnostics() }
+            }
+        }
+    }
+
+    /// A deliberate menu or keyboard start/stop still asks first, so a stray shortcut can't begin or end a meeting.
+    @MainActor static func confirmToggle(_ r: Recorder, then: () -> Void) {
+        let a = NSAlert()
+        a.alertStyle = r.isRecording ? .warning : .informational
+        a.messageText = r.isRecording ? "Stop recording?" : "Start recording?"
+        a.informativeText = r.isRecording ? "The recording is saved and the transcript is made next." : "Minute will record your microphone\(r.mode == .online ? " and the meeting audio" : "").\nOnly record with everyone's consent."
+        a.addButton(withTitle: r.isRecording ? "Stop" : "Start")
+        a.addButton(withTitle: "Cancel")
+        if a.runModal() == .alertFirstButtonReturn { if r.isRecording { r.stop() } else { r.start() }; then() }
     }
 
     var redDot: NSImage {

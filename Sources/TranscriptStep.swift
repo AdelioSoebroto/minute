@@ -1,37 +1,6 @@
 import SwiftUI
 import AVFoundation
 
-// MARK: - Transcript lines ("[hh:mm:ss] Who: text" in transcript.md)
-
-struct TLine: Identifiable, Equatable {
-    let id = UUID()
-    var time: String
-    var who: String
-    var text: String
-
-    var seconds: Double {
-        let p = time.split(separator: ":").compactMap { Double($0) }
-        return p.count == 3 ? p[0] * 3600 + p[1] * 60 + p[2] : 0
-    }
-    var speaker: String { who == "Me" ? "You" : who }
-
-    static func parse(_ text: String) -> [TLine] {
-        text.split(separator: "\n").compactMap { raw -> TLine? in
-            let s = String(raw)
-            guard s.hasPrefix("["), let close = s.firstIndex(of: "]") else { return nil }
-            let time = String(s[s.index(after: s.startIndex)..<close])
-            let rest = String(s[s.index(after: close)...]).trimmingCharacters(in: .whitespaces)
-            guard let colon = rest.firstIndex(of: ":") else { return nil }
-            return TLine(time: time, who: String(rest[..<colon]), text: String(rest[rest.index(after: colon)...]).trimmingCharacters(in: .whitespaces))
-        }
-    }
-
-    static func serialize(_ lines: [TLine]) -> String {
-        "# Transcript\n\n" + lines.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
-            .map { "[\($0.time)] \($0.who): \($0.text.replacingOccurrences(of: "\n", with: " "))" }.joined(separator: "\n") + "\n"
-    }
-}
-
 // MARK: - Play the recording from a line (mic and meeting audio together, like the meeting sounded)
 
 @MainActor
@@ -72,26 +41,48 @@ final class Playback: ObservableObject {
 
 // MARK: - The transcript list: search, play, edit, remove (used by the recording flow and by past meetings)
 
+/// Lets Edit > Undo bring back a deleted line or topic.
+final class UndoBox: NSObject { static let shared = UndoBox() }
+
 struct TranscriptPane: View {
     @Binding var lines: [TLine]
     let dir: URL?
+    var events: [ScreenEvent] = []
     @StateObject private var playback = Playback()
+    @Environment(\.undoManager) private var undo
     @State private var query = ""
     @State private var copied = false
+    @State private var naming: (id: UUID, all: Bool)?
+    @State private var nameField = ""
+    @State private var expanded: Set<UUID> = []
 
     private var words: Int { lines.reduce(0) { $0 + $1.text.split(separator: " ").count } }
-    private func tint(_ who: String) -> Color { who == "Me" ? .blue : who == "Others" ? .orange : .gray }
+    private func tint(_ who: String) -> Color { who == "Me" ? .blue : who == "Others" ? .orange : who == "Speaker" ? .gray : .purple }
     private func matches(_ l: TLine) -> Bool { query.isEmpty || l.text.localizedCaseInsensitiveContains(query) || l.speaker.localizedCaseInsensitiveContains(query) }
+
+    private enum Item: Identifiable { case line(UUID), screen(ScreenEvent)
+        var id: UUID { switch self { case .line(let i): return i; case .screen(let e): return e.id } } }
+
+    /// The transcript with shown-on-screen moments slotted in by time.
+    private var items: [Item] {
+        var out: [Item] = []; var pending = events.sorted { $0.t < $1.t }
+        for l in lines {
+            while let e = pending.first, Double(e.t) <= l.seconds { out.append(.screen(e)); pending.removeFirst() }
+            out.append(.line(l.id))
+        }
+        out += pending.map { .screen($0) }
+        return out
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
                     TextField("Search the transcript", text: $query).textStyle()
                     if !query.isEmpty {
                         Text("\(lines.filter(matches).count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain)
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain).accessibilityLabel("Clear search")
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 7).glass(Capsule())
@@ -101,7 +92,7 @@ struct TranscriptPane: View {
                     NSPasteboard.general.setString(TLine.serialize(lines), forType: .string)
                     Haptic.tick(); copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }.glassButton().help("Copy the transcript")
+                } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }.glassButton().help("Copy the transcript").accessibilityLabel("Copy the transcript")
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
             if lines.isEmpty {
@@ -110,16 +101,73 @@ struct TranscriptPane: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach($lines) { $l in row($l) }
+                        ForEach(items) { item in
+                            switch item {
+                            case .line(let id):
+                                if let i = lines.firstIndex(where: { $0.id == id }) { row($lines[i]) }
+                            case .screen(let e): screenRow(e)
+                            }
+                        }
                     }.padding(.horizontal, 10).padding(.vertical, 6)
                 }
                 .softScrollEdges()
             }
         }
         .onDisappear { playback.stop() }
+        .alert(naming?.all == true ? "Rename every line from this speaker" : "Who is speaking?", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
+            TextField("Name", text: $nameField)
+            Button("Cancel", role: .cancel) { naming = nil }
+            Button("Set") { applyName(nameField) }
+        } message: { Text("Names are used in the minutes to say who is responsible for what.") }
     }
 
     func stopPlayback() { playback.stop() }
+
+    private func applyName(_ raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespaces)
+        guard let n = naming, !name.isEmpty, let line = lines.first(where: { $0.id == n.id }) else { naming = nil; return }
+        let old = line.who
+        for i in lines.indices where n.all ? lines[i].who == old : lines[i].id == n.id { lines[i].who = name }
+        naming = nil
+    }
+
+    private func setWho(_ who: String, for id: UUID) { if let i = lines.firstIndex(where: { $0.id == id }) { lines[i].who = who } }
+
+    private func speakerMenu(_ line: TLine) -> some View {
+        let names = Array(Set(lines.map(\.who))).filter { !["Me", "Others", "Speaker"].contains($0) }.sorted()
+        return Menu {
+            Section("This line") {
+                Button("You") { setWho("Me", for: line.id) }
+                Button("Others") { setWho("Others", for: line.id) }
+                ForEach(names, id: \.self) { n in Button(n) { setWho(n, for: line.id) } }
+                Button("New name…") { nameField = ""; naming = (line.id, false) }
+            }
+            Divider()
+            Button("Rename every “\(line.speaker)” line…") { nameField = line.who == "Others" ? "" : line.speaker; naming = (line.id, true) }
+        } label: {
+            Text(line.speaker).font(.caption.weight(.semibold)).foregroundStyle(tint(line.who)).lineLimit(1)
+                .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(tint(line.who).opacity(0.12)))
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).frame(width: 66, alignment: .leading)
+        .help("Say who is speaking").accessibilityLabel("Speaker \(line.speaker). Change speaker")
+    }
+
+    private func screenRow(_ e: ScreenEvent) -> some View {
+        let open = expanded.contains(e.id)
+        return Button { if open { expanded.remove(e.id) } else { expanded.insert(e.id) } } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "rectangle.on.rectangle").foregroundStyle(.teal).frame(width: 70, alignment: .leading).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("On screen · \(e.time)").font(.caption.weight(.semibold)).foregroundStyle(.teal)
+                    Text(e.text).font(.caption).foregroundStyle(.secondary).lineLimit(open ? nil : 2).multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.teal.opacity(0.08)))
+        }
+        .buttonStyle(.plain).accessibilityLabel("Screen at \(e.time): \(e.text)").accessibilityHint(open ? "Collapse" : "Expand")
+    }
 
     private func row(_ l: Binding<TLine>) -> some View {
         let line = l.wrappedValue
@@ -136,18 +184,25 @@ struct TranscriptPane: View {
                 .frame(width: 70, alignment: .leading)
             }
             .buttonStyle(.plain).disabled(!canPlay).help(canPlay ? "Play from here" : "")
-            Text(line.speaker).font(.caption.weight(.semibold)).foregroundStyle(tint(line.who))
-                .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(tint(line.who).opacity(0.12)))
-                .frame(width: 58, alignment: .leading)
-            TextField("", text: l.text, axis: .vertical).textStyle().font(.callout)
-            Button { Haptic.tick(); withAnimation(.spring(duration: 0.3)) { lines.removeAll { $0.id == line.id } } } label: {
-                Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
-            }.buttonStyle(.borderless).help("Remove this line")
+            .accessibilityLabel(canPlay ? "Play from \(line.time)" : "Time \(line.time)")
+            speakerMenu(line)
+            TextField("", text: l.text, axis: .vertical).textStyle().font(.callout).accessibilityLabel("Transcript, \(line.speaker), \(line.time)")
+            Button { remove(line) } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary) }
+                .buttonStyle(.borderless).help("Remove this line").accessibilityLabel("Remove this line")
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(playback.playingID == line.id ? Color.accentColor.opacity(0.10) : (query.isEmpty || !matches(line) ? Color.clear : Color.yellow.opacity(0.22))))
         .opacity(matches(line) ? 1 : 0.35)
+    }
+
+    private func remove(_ line: TLine) {
+        guard let at = lines.firstIndex(where: { $0.id == line.id }) else { return }
+        Haptic.tick()
+        withAnimation(.spring(duration: 0.3)) { _ = lines.remove(at: at) }
+        let binding = $lines
+        undo?.registerUndo(withTarget: UndoBox.shared) { _ in withAnimation { binding.wrappedValue.insert(line, at: min(at, binding.wrappedValue.count)) } }
+        undo?.setActionName("Remove Line")
     }
 }
 
@@ -168,7 +223,7 @@ struct StepTranscript: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 4).frame(maxWidth: 760 + 48, alignment: .leading).frame(maxWidth: .infinity)
-            TranscriptPane(lines: $r.tLines, dir: r.session).frame(maxWidth: 760 + 48)
+            TranscriptPane(lines: $r.tLines, dir: r.session, events: r.screenEvents).frame(maxWidth: 760 + 48)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     }

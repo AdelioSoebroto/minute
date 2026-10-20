@@ -88,7 +88,11 @@ struct TemplatePicker: View {
     private func choice(_ symbol: String, _ title: String, _ detail: String, _ k: Kind) -> some View {
         Button { Haptic.tick(); kind = k } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Image(systemName: symbol).font(.title2).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
+                HStack {
+                    Image(systemName: symbol).font(.title2).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
+                    Spacer()
+                    if kind == k { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor) }
+                }
                 Text(title).font(.body.weight(.semibold))
                 Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -106,7 +110,7 @@ struct TemplatePicker: View {
     private var clean: some View {
         VStack(spacing: 10) {
             dropZone(symbol: "photo.badge.plus", title: logo?.lastPathComponent ?? "Drop your logo here",
-                     detail: logo == nil ? "PNG, JPG or PDF-free image. Optional; without one your organisation name is used." : "Click to choose another image.",
+                     detail: logo == nil ? "PNG or JPG. Optional: without a logo, your organisation name is used." : "Click to choose another image.",
                      types: ["png", "jpg", "jpeg", "heic", "gif", "tiff"]) { logo = $0 } open: { pick(["png", "jpg", "jpeg", "heic", "gif", "tiff"]) { logo = $0 } }
             TextField("Organisation name (optional)", text: $org).textFieldStyle(.roundedBorder)
         }

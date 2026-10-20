@@ -328,6 +328,28 @@ struct RecordCard: View {
     }
 }
 
+/// Always-visible "Saved in … Change" row at the bottom of the sidebar.
+struct StorageFooter: View {
+    var body: some View {
+        SettingsLink {
+            HStack(spacing: 10) {
+                Image(systemName: "folder").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Saved in").font(.caption2).foregroundStyle(.secondary)
+                    Text(Storage.root.path.replacingOccurrences(of: home.path, with: "~")).font(.caption).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                Text("Change…").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
+            .glass(RoundedRectangle(cornerRadius: 14, style: .continuous), interactive: true)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .help("Change where meetings are saved. The whole library moves with it.")
+    }
+}
+
 struct LibraryView: View {
     @ObservedObject var lib: Library
     @ObservedObject var r: Recorder
@@ -381,6 +403,7 @@ struct LibraryView: View {
                 }
             }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) { StorageFooter() }
             .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
             if let m = lib.meetings.first(where: { $0.id == selection }) { detail(m) }

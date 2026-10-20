@@ -47,7 +47,7 @@ enum Storage {
         }
         let cs = home.appendingPathComponent("Library/CloudStorage")
         let entries = ((try? fm.contentsOfDirectory(at: cs, includingPropertiesForKeys: [.isDirectoryKey])) ?? [])
-            .filter { $0.hasDirectoryPath && !$0.lastPathComponent.hasPrefix(".") && !$0.lastPathComponent.contains("(") }   // real providers only, not stray files or dated backups
+            .filter { $0.hasDirectoryPath && !$0.lastPathComponent.hasPrefix(".") && !$0.lastPathComponent.contains("(") && !$0.lastPathComponent.contains("Temp") && !$0.lastPathComponent.contains("SharedLibraries") }   // real providers only, not stray files or dated backups
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         for d in entries {
             let n = d.lastPathComponent

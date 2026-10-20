@@ -357,10 +357,14 @@ def annotate_dates(text: str, day0) -> str:
         text = re.sub(rf"\b({w})\b(?!\s*\[)", lambda m, k=k: f"{m.group(1)} [{fmt(day0 + datetime.timedelta(days=k))}]", text, flags=re.I)
     wk = day0 - datetime.timedelta(days=day0.weekday()) + datetime.timedelta(days=7)      # Monday of next week
     for i, h in enumerate(HARI):   # "Rabu depan" = that weekday of next week
+        if h == "Minggu": continue
         text = re.sub(rf"\b({h}\s+depan)\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(wk + datetime.timedelta(days=i))}]", text, flags=re.I)
     for e, i in EN_DAYS.items():
         text = re.sub(rf"\b(next\s+{e})\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(wk + datetime.timedelta(days=i))}]", text, flags=re.I)
     for i, h in enumerate(HARI):
+        if h == "Minggu":   # 'minggu' also means 'week' (dua minggu, mingguan): only treat it as Sunday after 'hari'
+            text = re.sub(r"(?<!setiap )(?<!tiap )\b(hari\s+minggu)\b(?!\s*,?\s*[\[\d])", lambda m: f"{m.group(1)} [{fmt(nxt(6))}]", text, flags=re.I)
+            continue
         text = re.sub(rf"(?<!setiap )(?<!tiap )(?<!every )(?<!each )\b(hari\s+)?({h})\b(?!\s*,?\s*[\[\d])(?!\s+depan)", lambda m, i=i: f"{m.group(0)} [{fmt(nxt(i))}]", text, flags=re.I)
     for e, i in EN_DAYS.items():
         text = re.sub(rf"(?<!every )(?<!each )(?<!next )\b({e})\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(nxt(i))}]", text, flags=re.I)

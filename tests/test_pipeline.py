@@ -68,6 +68,16 @@ class Unsupported(unittest.TestCase):
         out = m.drop_unsupported_dates(["yaitu hingga Minggu 25 Oktober 2026", "mulai Kamis 22 Oktober 2026"], tr, d0)
         self.assertEqual(out, ["yaitu hingga Minggu", "mulai Kamis 22 Oktober 2026"])
 
+class MingguMeansWeek(unittest.TestCase):
+    def test_minggu_as_week_is_not_sunday(self):
+        import datetime
+        out = m.annotate_dates("sudah empat minggu, dua minggu terakhir, laporan mingguan, minggu depan", datetime.date(2026, 10, 20))
+        self.assertNotIn("Minggu 25", out)
+        self.assertIn("minggu depan [week of", out)
+    def test_hari_minggu_is_sunday(self):
+        import datetime
+        self.assertIn("hari Minggu [Minggu 25 Oktober 2026]", m.annotate_dates("hari Minggu kita libur", datetime.date(2026, 10, 20)))
+
 class Recurring(unittest.TestCase):
     def test_recurring_weekday_gets_no_date(self):
         import datetime

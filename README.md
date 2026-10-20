@@ -20,7 +20,7 @@ Output lands in `~/Documents/MoM/<date_time>/`: `mic.caf`, `system.caf`, `transc
 - Xcode Command Line Tools (`swiftc`)
 - `brew install ffmpeg whisper-cpp ollama`
 - A whisper model, e.g. `ggml-large-v3-turbo-q5_0.bin` from [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp), in `~/.mom/models/`
-- An Ollama model: `ollama pull qwen3:14b`
+- An Ollama model: `ollama pull qwen3:8b`
 - Microsoft Word (used to convert the filled template to PDF)
 - Python 3 with `python-docx` (`pip3 install python-docx`)
 
@@ -35,7 +35,7 @@ Then copy your own MoM Word template to `~/.mom/template.docx` and open Minute. 
 Config (optional) lives in `~/.mom/config.json`:
 
 ```json
-{ "whisper_model": "~/.mom/models/ggml-large-v3-turbo-q5_0.bin", "llm": "qwen3:14b", "mom_language": "auto" }
+{ "whisper_model": "~/.mom/models/ggml-large-v3-turbo-q5_0.bin", "llm": "qwen3:8b", "mom_language": "auto" }
 ```
 
 ## Icon
@@ -76,7 +76,7 @@ build.sh               build, sign (ad hoc) and install
 
 ## Stays cool and quiet
 
-The pipeline sizes its work to the Mac every time it runs (`device_profile()` in `pipeline/mom`): RAM, power source and battery level, Low Power Mode and macOS thermal throttling pick **full** (on power), **balanced** (on battery) or **eco** (low battery, Low Power Mode or throttling: greedy transcription, no fact-check pass, the smaller model if installed). It runs at low priority, gives the language model only as much context as the transcript needs (the main cost in RAM), keeps one model loaded with a q8 cache, pauses if macOS is throttling, and unloads the model the moment it is done. Optional: `ollama pull qwen3:8b` for the eco profile.
+The pipeline sizes its work to the Mac every time it runs (`device_profile()` in `pipeline/mom`): RAM, power source and battery level, Low Power Mode and macOS thermal throttling pick **full** (on power), **balanced** (on battery) or **eco** (low battery, Low Power Mode or throttling: greedy transcription, no fact-check pass). It runs at low priority, gives the language model only as much context as the transcript needs (the main cost in RAM), keeps one model loaded with a q8 cache, pauses if macOS is throttling, and unloads the model the moment it is done. The default model is `qwen3:8b` (about 5 GB).
 
 ## Privacy
 

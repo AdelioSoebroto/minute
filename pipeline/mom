@@ -11,7 +11,7 @@ from pathlib import Path
 
 HOME = Path.home()
 CFG = {"whisper_model": str(HOME / ".mom/models/ggml-large-v3-turbo.bin"),
-       "llm": "qwen3:14b", "mom_language": "auto", "ctx": 32768,
+       "llm": "qwen3:8b", "mom_language": "auto", "ctx": 32768,
        "keep_audio": True, "title": "", "my_name": "Adelio Ferhan", "my_unit": "IT Digital Advertising Management"}
 cfgp = HOME / ".mom/config.json"
 if cfgp.exists():
@@ -564,6 +564,13 @@ def ask(d: Path, question: str):
     print(chat("You answer questions about one meeting using only its transcript (and minutes). Answer briefly and plainly in the language of the question. Quote the timestamp [hh:mm:ss] where the answer is said. If the meeting does not say, answer that it was not discussed.",
                f"TRANSCRIPT:\n{tr[:80000]}\n\nMINUTES:\n{mom}\n\nQUESTION: {question}"))
 
+def single_run():
+    """Only one heavy job at a time: queued runs wait instead of piling up and heating the Mac."""
+    import fcntl
+    f = open(HOME / ".mom/run.lock", "w")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
 def main():
     global LOGF
     args = sys.argv[1:]
@@ -572,6 +579,7 @@ def main():
     for a in args:
         if not a.startswith("--") and Path(a).expanduser().is_dir():
             LOGF = Path(a).expanduser() / "mom.log"; break
+    _lock = single_run()
     if args and args[0] == "--ask":
         return ask(Path(args[1]).expanduser().resolve(), " ".join(args[2:]))
     if not args: raise SystemExit(__doc__)

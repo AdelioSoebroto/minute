@@ -490,6 +490,23 @@ def make_mom(transcript: str, session: Path):
     tel = [x.lower() for x in data.get("telkomsel_names", [])]
     data["third_party_names"] = [x for x in data.get("third_party_names", []) if not any(t == x.lower() or t.startswith(x.lower() + " ") for t in tel)]
     if not data["third_party_names"] and data.get("third_party_company", "").lower() == "telkomsel": data["third_party_company"] = ""
+    try:    # completeness:
+        import datetime
+        day0 = datetime.date(int(session.name[:4]), int(session.name[5:7]), int(session.name[8:10])) every deadline/date said in the meeting must show up in the minutes
+        missing = []
+        for m_ in re.finditer(r"[^.?!\n]*\[(?:\w+ (\d{1,2}) (\w+) (\d{4}))\][^.?!\n]*", transcript):
+            if "week of" in m_.group(0): continue
+            ds = f"{m_.group(1)} {m_.group(2)}"
+            if ds == f"{day0.day} {BULAN[day0.month - 1]}": continue      # 'hari ini' needs no extra topic
+            if not any(ds in t for t in data.get("topics", [])): missing.append(m_.group(0).strip())
+        if missing:
+            stage("Adding missing dates and deadlines")
+            fixed = json.loads(chat("You complete minutes of meeting. Some sentences from the meeting mention a date or deadline (the exact date is in square brackets) that the minutes do not yet contain. Add each one to the most relevant existing topic, or add one short new topic. Keep every existing topic, formal Bahasa Indonesia, no invented facts. Return all topics.",
+                f"MINUTES TOPICS:\n{json.dumps(data['topics'], ensure_ascii=False)}\n\nMISSING:\n" + "\n".join(missing), {"type": "object", "required": ["topics"], "properties": {"topics": {"type": "array", "items": {"type": "string"}}}}))
+            if len(fixed.get("topics", [])) >= len(data["topics"]): data["topics"] = fixed["topics"]
+    except Exception as e:
+        log("completeness pass skipped: " + repr(e))
+    data["topics"] = [re.sub(r"\s*\[([^\]]*)\]", r" \1", t).replace("  ", " ").strip() for t in data.get("topics", [])]   # never leak the date hints
     me = CFG["my_name"]
     if me and me.lower() not in [x.lower() for x in data.get("telkomsel_names", [])]:
         data["telkomsel_names"] = [me] + [x for x in data.get("telkomsel_names", []) if not x.lower().startswith(me.lower().split()[0]) or x.lower() == me.lower()]

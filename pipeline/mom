@@ -273,7 +273,7 @@ def chat(system, user, schema=None):
     ctx = min(pr["ctx_cap"], max(4096, -(-need // 2048) * 2048))  # only as much context as needed: it is what costs RAM
     cooldown()
     payload = {"model": CFG["llm"], "stream": False, "think": False, "keep_alive": "20s",
-               "options": {"num_ctx": ctx, "temperature": 0.2},
+               "options": {"num_ctx": ctx, "temperature": 0.1, "seed": 7},
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     if schema: payload["format"] = schema
     req = urllib.request.Request("http://127.0.0.1:11434/api/chat", json.dumps(payload).encode(), {"Content-Type": "application/json"})

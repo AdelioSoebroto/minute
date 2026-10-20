@@ -74,6 +74,10 @@ build.sh               build, sign (ad hoc) and install
 - Audio is written to disk continuously; if anything fails after recording, the audio is kept and **Draft minutes** in the library retries. Each meeting folder has a `mom.log`.
 - Tests: `python3 tests/test_pipeline.py`
 
+## Design
+
+Built on Liquid Glass: the step bar, buttons, source chips and the record button are glass, and content scrolls beneath floating controls. Everything goes through `Sources/Glass.swift`, which uses the Liquid Glass APIs on macOS 26 and later and falls back to system materials on macOS 14.2-25, so the app picks up newer system styling without per-version code. It only uses standard SwiftUI controls and system fonts (San Francisco), and honours Reduce Motion, VoiceOver and dark mode.
+
 ## Stays cool and quiet
 
 The pipeline sizes its work to the Mac every time it runs (`device_profile()` in `pipeline/mom`): RAM, power source and battery level, Low Power Mode and macOS thermal throttling pick **full** (on power), **balanced** (on battery) or **eco** (low battery, Low Power Mode or throttling: greedy transcription, no fact-check pass). It runs at low priority, gives the language model only as much context as the transcript needs (the main cost in RAM), keeps one model loaded with a q8 cache, pauses if macOS is throttling, and unloads the model the moment it is done. The default model is `qwen3:8b` (about 5 GB).

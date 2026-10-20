@@ -53,6 +53,27 @@ class Annotate(unittest.TestCase):
         self.assertIn("Jumat [Jumat 23 Oktober 2026]", out)
         self.assertIn("Sabtu [Sabtu 24 Oktober 2026]", out)
 
+class NextWeek(unittest.TestCase):
+    def test_weekday_depan_is_next_week(self):
+        import datetime
+        out = m.annotate_dates("deadline-nya Rabu depan, we meet next Friday", datetime.date(2026, 10, 20))
+        self.assertIn("Rabu depan [Rabu 28 Oktober 2026]", out)
+        self.assertIn("next Friday [Jumat 30 Oktober 2026]", out)
+
+class Unsupported(unittest.TestCase):
+    def test_drops_invented_weekday_date_keeps_supported(self):
+        import datetime
+        d0 = datetime.date(2026, 10, 20)
+        tr = "mulai Kamis [Kamis 22 Oktober 2026] ya"
+        out = m.drop_unsupported_dates(["yaitu hingga Minggu 25 Oktober 2026", "mulai Kamis 22 Oktober 2026"], tr, d0)
+        self.assertEqual(out, ["yaitu hingga Minggu", "mulai Kamis 22 Oktober 2026"])
+
+class Recurring(unittest.TestCase):
+    def test_recurring_weekday_gets_no_date(self):
+        import datetime
+        out = m.annotate_dates("laporan tiap Senin pagi, setiap Jumat, every Monday", datetime.date(2026, 10, 20))
+        self.assertNotIn("[", out)
+
 class Dates(unittest.TestCase):
     def test_ordinals(self):
         self.assertEqual(m.nice_date(2026, 10, 19), "October 19th, 2026")

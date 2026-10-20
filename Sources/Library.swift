@@ -167,6 +167,7 @@ struct PaperDesk<Content: View>: View {
         }
         .defaultScrollAnchor(.top)
         .background(Color(nsColor: .underPageBackgroundColor))
+        .softScrollEdges()
     }
 }
 
@@ -350,17 +351,17 @@ struct LibraryView: View {
                 if tab == 0 { minutes(m) } else { VStack(spacing: 0) { TranscriptView(text: m.transcript, query: query); if !m.transcript.isEmpty { askBar(m) } } }
             }
             Divider()
-            HStack(spacing: 10) {
-                if m.hasDocx { Button { NSWorkspace.shared.open(m.dir.appendingPathComponent("MoM.docx")) } label: { Label("Word", systemImage: "doc.text") } }
-                if m.hasPdf { Button { NSWorkspace.shared.open(m.dir.appendingPathComponent("MoM.pdf")) } label: { Label("PDF", systemImage: "doc.richtext") } }
-                Button { NSWorkspace.shared.activateFileViewerSelecting([m.dir]) } label: { Label("Finder", systemImage: "folder") }
+            GlassGroup(spacing: 12) { HStack(spacing: 10) {
+                if m.hasDocx { Button { NSWorkspace.shared.open(m.dir.appendingPathComponent("MoM.docx")) } label: { Label("Word", systemImage: "doc.text") }.glassButton() }
+                if m.hasPdf { Button { NSWorkspace.shared.open(m.dir.appendingPathComponent("MoM.pdf")) } label: { Label("PDF", systemImage: "doc.richtext") }.glassButton() }
+                Button { NSWorkspace.shared.activateFileViewerSelecting([m.dir]) } label: { Label("Finder", systemImage: "folder") }.glassButton()
                 Spacer()
-                Button(role: .destructive) { confirmDelete = m } label: { Label("Delete", systemImage: "trash") }
+                Button(role: .destructive) { confirmDelete = m } label: { Label("Delete", systemImage: "trash") }.glassButton()
                 if m.data != nil {
                     Button { edit(m) } label: { Text(m.hasPdf ? "Edit & re-export" : "Review & export") }
-                        .buttonStyle(.borderedProminent).disabled(r.isBusy || r.isRecording)
+                        .glassButton(prominent: true).disabled(r.isBusy || r.isRecording)
                 }
-            }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
+            } }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12)
         }
         .id(m.id)
         .onChange(of: selection) { _, _ in answer = ""; question = "" }
@@ -371,14 +372,14 @@ struct LibraryView: View {
             if !answer.isEmpty || asking {
                 Group { if asking { HStack { ProgressView().controlSize(.small); Text("Thinking…").foregroundStyle(.secondary) } } else { Text(answer).textSelection(.enabled) } }
                     .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
+                    .glass(RoundedRectangle(cornerRadius: 16))
             }
             HStack {
                 Image(systemName: "sparkles").foregroundStyle(.secondary)
                 TextField("Ask about this meeting…", text: $question).textFieldStyle(.plain).onSubmit { ask(m) }
                 if !question.isEmpty { Button { ask(m) } label: { Image(systemName: "arrow.up.circle.fill") }.buttonStyle(.borderless).disabled(asking) }
-            }.padding(10).background(RoundedRectangle(cornerRadius: 10).stroke(.quaternary))
-        }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+            }.padding(.horizontal, 14).padding(.vertical, 10).glass(Capsule(), interactive: true)
+        }.padding(.horizontal, 20).padding(.vertical, 12)
     }
 
     func ask(_ m: Meeting) {

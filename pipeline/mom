@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """mom <session-folder | audio-file> : transcribe on-device (whisper.cpp) and write a MoM (local LLM via Ollama).
 
 A session folder holds mic.caf (you) and optionally system.caf (the other participants).
@@ -18,7 +18,7 @@ if cfgp.exists():
     CFG.update(json.loads(cfgp.read_text()))
 # Everything runs on this Mac and never needs the internet. Talk to Ollama directly even if a VPN or proxy is configured.
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
-os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")
+os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + os.environ.get("PATH", "")
 
 def sh(cmd):
     try: return subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
@@ -26,12 +26,12 @@ def sh(cmd):
 
 def device_profile():
     """Pick how hard to work from this Mac's RAM, power source, Low Power Mode and thermal state, so it stays cool and quiet."""
-    ram = int(sh(["sysctl", "-n", "hw.memsize"]).strip() or 0) / 2**30
-    batt = sh(["pmset", "-g", "batt"])
+    ram = int(sh(["/usr/sbin/sysctl", "-n", "hw.memsize"]).strip() or 0) / 2**30
+    batt = sh(["/usr/bin/pmset", "-g", "batt"])
     on_ac = "AC Power" in batt
     m = re.search(r"(\d+)%", batt); pct = int(m.group(1)) if m else 100
-    low_power = bool(re.search(r"lowpowermode\s+1", sh(["pmset", "-g"])))
-    m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", sh(["pmset", "-g", "therm"])); limit = int(m.group(1)) if m else 100
+    low_power = bool(re.search(r"lowpowermode\s+1", sh(["/usr/bin/pmset", "-g"])))
+    m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", sh(["/usr/bin/pmset", "-g", "therm"])); limit = int(m.group(1)) if m else 100
     if limit < 100 or low_power or (not on_ac and pct < 30): mode = "eco"
     elif not on_ac: mode = "balanced"
     else: mode = "full"
@@ -53,7 +53,7 @@ def profile():
 def cooldown():
     """If macOS is throttling the CPU, give it a moment before the next heavy step."""
     for _ in range(6):
-        m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", sh(["pmset", "-g", "therm"]))
+        m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", sh(["/usr/bin/pmset", "-g", "therm"]))
         if not m or int(m.group(1)) >= 100: return
         stage("Letting the Mac cool down"); time.sleep(10)
 
@@ -156,7 +156,7 @@ def whisper_prompt():
     terms = ", ".join(glossary()[-40:])
     base = ("Meeting in English and Bahasa Indonesia, formal and casual, switching between them. "
             "Obrolan santai dan formal: gue, lo, nggak, udah, banget, sih, dong, deh, kok, wkwk, deploy, follow up, approval. "
-            "Transcribe exactly as spoken, keep slang and English words as said.")
+            "Acronyms: CTR, KPI, SLA, API, SSL, VPN, UAT, PIC, MoM. Transcribe exactly as spoken, keep slang and English words as said.")
     return (base + (f" Terms: {terms}." if terms else ""))[:700]
 
 def collapse_loops(t: str) -> str:
@@ -214,6 +214,32 @@ def drop_echo(segs):
         keep.append(x)
     return keep
 
+def suppress_bleed(mic: Path, system: Path, out: Path):
+    """When the meeting plays through speakers the mic hears it too. Using the exact meeting audio as a reference, silence the
+    mic wherever it is only picking up that bleed (not the user's own, much louder, voice). Both files: 16 kHz mono 16-bit WAV."""
+    import audioop, wave
+    with wave.open(str(mic)) as a, wave.open(str(system)) as b:
+        ma, sb = a.readframes(a.getnframes()), b.readframes(b.getnframes())
+    n = 1600                                  # 0.1 s frames
+    fa = [ma[i:i + 2 * n] for i in range(0, len(ma), 2 * n)]
+    fb = [sb[i:i + 2 * n] for i in range(0, len(sb), 2 * n)]
+    m = min(len(fa), len(fb))
+    ra = [audioop.rms(f, 2) for f in fa[:m]]; rb = [audioop.rms(f, 2) for f in fb[:m]]
+    loud = [i for i in range(m) if rb[i] > 400]
+    if len(loud) < 20: shutil.copy(mic, out); return 0
+    ratios = sorted(ra[i] / rb[i] for i in loud)
+    g = ratios[len(ratios) // 3]              # typical bleed gain: the lower third, i.e. frames where only the speakers are heard
+    muted, parts = 0, []
+    for i in range(len(fa)):
+        f = fa[i]
+        # bleed-only frames: meeting audio present and the mic is not much louder than the bleed we would expect
+        if i < m and rb[i] > 400 and ra[i] < 2.5 * g * rb[i] + 150: f = b"\x00" * len(f); muted += 1
+        parts.append(f)
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b"".join(parts))
+    log(f"bleed suppression: gain {g:.2f}, muted {muted} of {len(fa)} frames")
+    return muted
+
 def ts(sec): return f"{int(sec // 3600):02d}:{int(sec % 3600 // 60):02d}:{int(sec % 60):02d}"
 
 def ollama_up():
@@ -256,7 +282,7 @@ Return JSON with:
 - agenda: short meeting title, in the form "<Category> - <Subject>" using words actually said in the meeting, never copied from the examples.
 - telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. Telkomsel = internal staff; third party = vendors or other companies, and anyone said to be 'from' or 'dari' a company other than Telkomsel belongs under third party with that company. If unsure, put in telkomsel_names. Never guess names. Never list the labels Me, Others or Speaker as people.
 - telkomsel_unit / third_party_company: unit or company name if stated, else "".
-- topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. One topic per subject: merge points about the same subject instead of repeating them. Keep common English business words as spoken (follow up, deploy, approval, change request); never translate them literally. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
+- topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. Merge only true duplicates; never drop a decision, action item, owner, deadline or number: every one that the transcript contains must appear in the topics. Keep common English business words as spoken (follow up, deploy, approval, change request); never translate them literally. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
 'Me' is the person who recorded ({me}); 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording. Never write Me, Others or Speaker in the output: use the person's real name, or 'peserta rapat' when unknown.
 Style examples of topics (Bahasa Indonesia):
 {examples}
@@ -329,12 +355,30 @@ def annotate_dates(text: str, day0) -> str:
     rel = {r"besok": 1, r"tomorrow": 1, r"lusa": 2, r"hari ini": 0, r"today": 0, r"kemarin": -1, r"yesterday": -1}
     for w, k in rel.items():
         text = re.sub(rf"\b({w})\b(?!\s*\[)", lambda m, k=k: f"{m.group(1)} [{fmt(day0 + datetime.timedelta(days=k))}]", text, flags=re.I)
-    for i, h in enumerate(HARI):
-        text = re.sub(rf"\b(hari\s+)?({h})\b(?!\s*,?\s*[\[\d])", lambda m, i=i: f"{m.group(0)} [{fmt(nxt(i))}]", text, flags=re.I)
+    wk = day0 - datetime.timedelta(days=day0.weekday()) + datetime.timedelta(days=7)      # Monday of next week
+    for i, h in enumerate(HARI):   # "Rabu depan" = that weekday of next week
+        text = re.sub(rf"\b({h}\s+depan)\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(wk + datetime.timedelta(days=i))}]", text, flags=re.I)
     for e, i in EN_DAYS.items():
-        text = re.sub(rf"\b({e})\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(nxt(i))}]", text, flags=re.I)
+        text = re.sub(rf"\b(next\s+{e})\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(wk + datetime.timedelta(days=i))}]", text, flags=re.I)
+    for i, h in enumerate(HARI):
+        text = re.sub(rf"(?<!setiap )(?<!tiap )(?<!every )(?<!each )\b(hari\s+)?({h})\b(?!\s*,?\s*[\[\d])(?!\s+depan)", lambda m, i=i: f"{m.group(0)} [{fmt(nxt(i))}]", text, flags=re.I)
+    for e, i in EN_DAYS.items():
+        text = re.sub(rf"(?<!every )(?<!each )(?<!next )\b({e})\b(?!\s*\[)", lambda m, i=i: f"{m.group(1)} [{fmt(nxt(i))}]", text, flags=re.I)
     text = re.sub(r"\b(minggu depan|next week)\b", lambda m: f"{m.group(1)} [week of {fmt(day0 + datetime.timedelta(days=7 - day0.weekday()))}]", text, flags=re.I)
     return text
+
+def drop_unsupported_dates(topics, annotated_transcript, day0):
+    """A small model sometimes invents a date. Keep an exact date in the minutes only if the meeting (or the calendar words said in it) supports it."""
+    import datetime
+    allowed = {(day0.day, day0.month)}
+    for m in re.finditer(r"(\d{1,2})\s+(" + "|".join(BULAN) + r")", annotated_transcript, re.I):
+        allowed.add((int(m.group(1)), [b.lower() for b in BULAN].index(m.group(2).lower()) + 1))
+    pat = re.compile(r"\b((?:" + "|".join(HARI) + r"),?\s+)?(\d{1,2})\s+(" + "|".join(BULAN) + r")(\s+\d{4})?", re.I)
+    def sub(m):
+        key = (int(m.group(2)), [b.lower() for b in BULAN].index(m.group(3).lower()) + 1)
+        if key in allowed: return m.group(0)
+        return (m.group(1) or "").strip(" ,") if m.group(1) else m.group(0)   # unsupported weekday+date: keep only the weekday
+    return [pat.sub(sub, t) for t in topics]
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 def nice_date(y, m, d):
@@ -409,7 +453,7 @@ def make_mom(transcript: str, session: Path):
         notes = "\n\nANALYSIS OF THE MEETING (use it, but stay faithful to the transcript):\n" + json.dumps(an, ensure_ascii=False)
     except Exception as e:
         log("analysis skipped: " + repr(e))
-    system += "\nThe transcript is casual and mixed-register. Write the minutes in formal, professional language regardless of how informally it was spoken; do not copy slang. Express relative dates as absolute dates."
+    system += "\nThe transcript is casual and mixed-register. Write the minutes in formal, professional language regardless of how informally it was spoken; do not copy slang. Express one-off relative dates as absolute dates, but keep recurring ones recurring: 'setiap Senin', 'every Monday' must stay 'setiap Senin' with no date added."
     stage("Writing the MoM")
     data = json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}{notes}", SCHEMA))
     # second pass: check the draft against the transcript and drop anything it does not support
@@ -434,6 +478,7 @@ def make_mom(transcript: str, session: Path):
         day0 = datetime.date(int(session.name[:4]), int(session.name[5:7]), int(session.name[8:10]))
         said_days = {h.lower() for h in HARI if h.lower() in transcript.lower()}
         data["topics"] = [fix_weekday_dates(t, day0, said_days) for t in data.get("topics", [])]
+        data["topics"] = drop_unsupported_dates(data["topics"], transcript, day0)
     except Exception as e:
         log("date fix skipped: " + repr(e))
     for k in ("telkomsel_names", "third_party_names"):
@@ -619,10 +664,16 @@ def main():
     segs = []
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
+        wavs = {}
         for label, src in tracks:
             stage(f"Preparing {label} audio")
-            wav = tmp / f"{label}.wav"; to_wav(src, wav)
-            segs += transcribe(label, wav, tmp, 0, len(tracks))
+            wav = tmp / f"{label}.wav"; to_wav(src, wav); wavs[label] = wav
+        if "Me" in wavs and "Others" in wavs:
+            stage("Removing speaker bleed from the mic")
+            clean = tmp / "Me_clean.wav"
+            if suppress_bleed(wavs["Me"], wavs["Others"], clean) is not None and clean.exists(): wavs["Me"] = clean
+        for label, _ in tracks:
+            segs += transcribe(label, wavs[label], tmp, 0, len(tracks))
     segs.sort(key=lambda x: x[0])
     segs = drop_echo(segs)
     lines, prev = [], None

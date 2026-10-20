@@ -46,7 +46,7 @@ func runMom(_ args: [String], full: Bool = false, stage: @escaping @Sendable (St
         p.executableURL = URL(fileURLWithPath: momCLI)
         p.arguments = args
         p.qualityOfService = .utility   // heavy work runs behind the user's apps
-        p.environment = ProcessInfo.processInfo.environment.merging(["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"]) { $1 }
+        p.environment = ProcessInfo.processInfo.environment.merging(["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]) { $1 }
         let out = Pipe(); p.standardOutput = out; p.standardError = out
         let tail = Tail()
         out.fileHandleForReading.readabilityHandler = { h in
@@ -246,6 +246,7 @@ final class Recorder: ObservableObject {
             let (code, tail) = await runMom([dir.path]) { s in Task { @MainActor in if case .processing = self.phase { self.phase = .processing(s) } } }
             if code == 0, loadDraft(dir) {
                 phase = .review
+                if ProcessInfo.processInfo.environment["MINUTE_AUTOEXPORT"] != nil { export() }   // test hook
                 notify("Minutes drafted", "Open Minute to review and export.")
             } else {
                 phase = .failed("Could not draft the minutes: \(tail)\nYour audio is safe in \(dir.lastPathComponent).")
@@ -377,8 +378,8 @@ struct HoldButton: View {
     var body: some View {
         VStack(spacing: 12) {
             ZStack {
-                Circle().fill(tint.opacity(pressing ? 0.18 : 0.10))
-                Circle().stroke(tint.opacity(0.18), lineWidth: 4)
+                Color.clear.glass(Circle(), tint: tint.opacity(pressing ? 0.35 : 0.18), interactive: true)
+                Circle().stroke(tint.opacity(0.22), lineWidth: 4)
                 Circle().trim(from: 0, to: progress)
                     .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                     .rotationEffect(.degrees(-90))
@@ -439,8 +440,8 @@ struct SourceChip: View {
             Text(label).font(.caption)
             Circle().fill(level > 0.01 ? Color.green : Color.secondary.opacity(0.4)).frame(width: 6, height: 6)
         }
-        .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(Capsule().fill(.quaternary.opacity(0.6)))
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .glass(Capsule())
         .foregroundStyle(.secondary)
     }
 }
@@ -555,6 +556,8 @@ struct StepBar: View {
                 }
             }
         }
+        .padding(.horizontal, 18).padding(.vertical, 9)
+        .glass(Capsule())
         .animation(.spring(duration: 0.5), value: step)
     }
 }
@@ -570,25 +573,25 @@ struct MainWindow: View {
     @State private var showTranscript = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            StepBar(step: r.step).padding(.vertical, 14).frame(maxWidth: .infinity)
-            Divider()
-            ZStack {
-                Group {
-                    switch r.step {
-                    case 0: StepRecord(r: r)
-                    case 1: StepReview(r: r)
-                    default: StepExport(r: r)
-                    }
+        ZStack {
+            Group {
+                switch r.step {
+                case 0: StepRecord(r: r)
+                case 1: StepReview(r: r)
+                default: StepExport(r: r)
                 }
-                .id(r.step)
-                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
-                                        removal: .move(edge: .leading).combined(with: .opacity)))
             }
-            .animation(.spring(duration: 0.55, bounce: 0.1), value: r.step)
-            .clipped()
+            .id(r.step)
+            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                    removal: .move(edge: .leading).combined(with: .opacity)))
         }
+        .animation(.spring(duration: 0.55, bounce: 0.1), value: r.step)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            StepBar(step: r.step).padding(.top, 10).padding(.bottom, 8).frame(maxWidth: .infinity)
+        }
+        .clipped()
         .frame(minWidth: 760, minHeight: 640)
+        .background(.background)
         .inspector(isPresented: $showTranscript) {
             TranscriptView(text: r.transcript.replacingOccurrences(of: "# Transcript\n\n", with: ""))
                 .inspectorColumnWidth(min: 300, ideal: 360, max: 480)
@@ -662,21 +665,25 @@ struct StepReview: View {
             }
         }
         .onAppear { DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) } }
+        .softScrollEdges()
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack {
-                Button("Discard") { r.reset() }.foregroundStyle(.secondary).buttonStyle(.borderless)
-                Spacer().frame(width: 8)
-                Button { r.tidy() } label: {
-                    if r.tidying { ProgressView().controlSize(.small) } else { Label("Tidy up", systemImage: "sparkles") }
-                }.disabled(r.tidying).help("Fix spacing, punctuation and wording with the on-device model")
-                if r.canUndoTidy { Button("Undo tidy") { r.undoTidy() }.buttonStyle(.borderless).transition(.opacity) }
-                Spacer()
-                Toggle("Auto-tidy on export", isOn: $r.autoTidy).toggleStyle(.checkbox).font(.callout).foregroundStyle(.secondary)
-                Button { r.export() } label: { Text("Export Word & PDF").frame(minWidth: 150) }
-                    .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+            GlassGroup(spacing: 14) {
+                HStack(spacing: 12) {
+                    Button("Discard") { r.reset() }.glassButton()
+                    Button { r.tidy() } label: {
+                        if r.tidying { ProgressView().controlSize(.small).frame(width: 70) } else { Label("Tidy up", systemImage: "sparkles") }
+                    }.glassButton().disabled(r.tidying).help("Fix spacing, punctuation and wording with the on-device model")
+                    if r.canUndoTidy { Button("Undo tidy") { r.undoTidy() }.glassButton().transition(.scale.combined(with: .opacity)) }
+                    Spacer(minLength: 8)
+                    Toggle("Auto-tidy", isOn: $r.autoTidy).toggleStyle(.checkbox).font(.callout).foregroundStyle(.secondary)
+                        .padding(.horizontal, 12).padding(.vertical, 8).glass(Capsule())
+                    Button { r.export() } label: { Text("Export Word & PDF").frame(minWidth: 140) }
+                        .glassButton(prominent: true).keyboardShortcut(.defaultAction)
+                }
+                .controlSize(.large)
+                .animation(.spring(duration: 0.4), value: r.canUndoTidy)
             }
-            .padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
-            .overlay(alignment: .top) { Divider() }
+            .padding(.horizontal, 20).padding(.vertical, 12)
         }
     }
 }
@@ -693,10 +700,13 @@ struct StepExport: View {
                 Text("Your minutes are ready").font(.title2.weight(.semibold))
                 Text(d.path.replacingOccurrences(of: home.path, with: "~")).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 HStack(spacing: 10) {
-                    Button { open("MoM.docx") } label: { Label("Open Word", systemImage: "doc.text").frame(minWidth: 100) }
-                        .buttonStyle(.borderedProminent)
-                    Button { open("MoM.pdf") } label: { Label("Open PDF", systemImage: "doc.richtext").frame(minWidth: 100) }
-                    Button { NSWorkspace.shared.activateFileViewerSelecting([d.appendingPathComponent("MoM.pdf")]) } label: { Label("Show in Finder", systemImage: "folder") }
+                    GlassGroup(spacing: 12) {
+                        HStack(spacing: 10) {
+                            Button { open("MoM.docx") } label: { Label("Open Word", systemImage: "doc.text").frame(minWidth: 100) }.glassButton(prominent: true)
+                            Button { open("MoM.pdf") } label: { Label("Open PDF", systemImage: "doc.richtext").frame(minWidth: 100) }.glassButton()
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([d.appendingPathComponent("MoM.pdf")]) } label: { Label("Show in Finder", systemImage: "folder") }.glassButton()
+                        }
+                    }
                 }.controlSize(.large)
                 HStack(spacing: 18) {
                     Button("Edit again") { r.backToReview() }

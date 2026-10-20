@@ -18,7 +18,7 @@ SCRIPT = [
     ("oth", "Daniel",     "Great, thanks."),
     ("me",  "Damayanti", "Sip. Kalau begitu rapat kita sudahi, terima kasih semuanya."),
 ]
-EXPECT = [r"API", r"sandbox|timing out|timeout", r"vendor", r"finance", r"23|Jumat|Friday"]
+EXPECT = [r"API", r"sandbox|timing out|timeout", r"vendor", r"finance|keuangan", r"23|Jumat|Friday"]
 
 def render(voice, text, tmp, i):
     aiff, wav = tmp / f"{i}.aiff", tmp / f"{i}.wav"

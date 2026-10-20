@@ -429,26 +429,87 @@ def transcribe(label, wav, tmp, total_done, n_total):
         if b - a < 0.8 or mean_volume(wav, a, b) < (-45 if label == "Others" else -50): continue
         ch = tmp / f"{label}_{i:04d}.wav"
         run(["ffmpeg", "-y", "-ss", str(a), "-t", str(b - a), "-i", str(wav), "-c", "copy", str(ch)])
+        runs = [[a + x, a + y] for x, y in speech_runs(ch)]
         j = whisper(ch, "auto")
         if j.get("result", {}).get("language") not in ("en", "id"):
             j = whisper(ch, "id")
+        floor = a
         for s in j.get("transcription", []):
             t = collapse_loops(s["text"].strip())
             if not t or HALLU.match(t): continue
-            segs += split_lines(a + s["offsets"]["from"] / 1000, a + s["offsets"]["to"] / 1000, label, t)
+            sf, st = align_to_speech(a + s["offsets"]["from"] / 1000, a + s["offsets"]["to"] / 1000, runs, floor)
+            floor = st
+            segs += split_lines(sf, st, label, t, runs=runs)
     return segs
 
-def split_lines(start, end, label, text, maxlen=170):
-    """Whisper returns long blocks; cut them at sentence ends into caption-sized lines, timing each by its share of the block."""
+def speech_runs(wav_path, thr_ratio=0.12):
+    """Stretches of actual speech (start, end) in seconds within a wav, from its loudness, so lines are timed by when words were spoken and not spread over silence."""
+    import wave, audioop
+    try:
+        w = wave.open(str(wav_path)); n = int(w.getframerate() * 0.1); rms = []
+        while True:
+            b = w.readframes(n)
+            if not b: break
+            rms.append(audioop.rms(b, 2))
+    except Exception:
+        return []
+    if not rms: return []
+    thr = max(200, sorted(rms)[int(len(rms) * 0.9)] * thr_ratio)
+    runs, start = [], None
+    for i, v in enumerate(rms):
+        if v >= thr and start is None: start = i
+        if v < thr and start is not None: runs.append([start * 0.1, i * 0.1]); start = None
+    if start is not None: runs.append([start * 0.1, len(rms) * 0.1])
+    merged = []
+    for r in runs:
+        if merged and r[0] - merged[-1][1] < 0.6: merged[-1][1] = r[1]
+        else: merged.append(r)
+    return merged
+
+def _at_speech_fraction(runs, frac):
+    """Wall-clock time at which `frac` of the speech in `runs` has been spoken."""
+    total = sum(b - a for a, b in runs)
+    if total <= 0: return runs[0][0]
+    target = frac * total
+    for a, b in runs:
+        if target <= b - a: return a + target
+        target -= b - a
+    return runs[-1][1]
+
+def align_to_speech(sf, st, runs, floor=0.0):
+    """Whisper's timestamps are unreliable around silence (it can place a sentence right after the previous one even though it was spoken much later).
+    If a segment overlaps no speech but speech comes later, move it to the next stretch of real speech."""
+    if not runs: return sf, st
+    if any(min(st, b) - max(sf, a) >= 0.5 for a, b in runs): return sf, st
+    nxt = next((r for r in runs if r[0] >= floor - 0.3 and r[1] > sf), None)
+    return (nxt[0], nxt[1]) if nxt else (sf, st)
+
+def split_lines(start, end, label, text, maxlen=170, runs=None):
+    """Whisper returns long blocks; cut them at sentence ends into caption-sized lines and time each by when it was actually spoken (runs = speech stretches, absolute seconds)."""
     parts = [x for x in re.split(r"(?<=[.!?…])\s+", text) if x]
     groups, cur = [], ""
     for x in parts:
         if cur and len(cur) + 1 + len(x) > maxlen: groups.append(cur); cur = x
         else: cur = (cur + " " + x).strip()
     if cur: groups.append(cur)
+    clipped = [[max(a, start), min(b, end)] for a, b in (runs or []) if b > start and a < end]
+    clipped = [r for r in clipped if r[1] > r[0]]
+    long_enough = [r for r in clipped if r[1] - r[0] >= 0.5]
+    clipped = long_enough or clipped          # the tail of the previous utterance that Whisper's window touches is not this sentence
     total = max(1, sum(len(g) for g in groups)); done = 0; out = []
+    speech = sum(b - a for a, b in clipped)
+    bounds, acc = [], 0.0                       # speech seconds elapsed when each stretch ends, and where the next one starts
+    for k in range(len(clipped) - 1):
+        acc += clipped[k][1] - clipped[k][0]; bounds.append((acc, clipped[k + 1][0]))
+    prev_len = 0.0
     for g in groups:
-        out.append((start + (end - start) * done / total, label, g)); done += len(g)
+        if not clipped: t = start + (end - start) * done / total
+        else:
+            x = done / total * speech
+            t = _at_speech_fraction(clipped, done / total)
+            near = min(bounds, key=lambda bd: abs(bd[0] - x), default=None)
+            if near and done and abs(near[0] - x) <= max(0.8, 0.5 * prev_len): t = near[1]      # a new sentence usually starts after a pause: snap to it
+        out.append((t, label, g)); done += len(g); prev_len = speech * len(g) / total
     return out
 
 def drop_echo(segs):

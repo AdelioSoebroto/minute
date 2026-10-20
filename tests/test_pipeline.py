@@ -163,6 +163,19 @@ class TranscriptCleanup(unittest.TestCase):
         segs = [(0, "Others", "Sous-titrage Société Radio-Canada"), (5, "Me", "Ya halo selamat pagi"), (9, "Me", "Thanks for watching!"),
                 (20, "Others", "ini kalimat yang sama lagi"), (30, "Others", "ini kalimat yang sama lagi"), (40, "Others", "ini kalimat yang sama lagi"), (50, "Others", "Okay"), (60, "Others", "Okay"), (70, "Others", "Okay")]
         self.assertEqual([x[2] for x in m.drop_hallucinations(segs)], ["Ya halo selamat pagi", "Okay", "Okay", "Okay"])
+    def test_lines_are_timed_by_speech_not_by_silence(self):
+        # one block 0-30 s, but the speaker only talked 0-5 s and 22-27 s (others were talking in between)
+        out = m.split_lines(0, 30, "Me", "Kalimat pertama di awal. Kalimat kedua jauh di akhir rapat itu.", maxlen=30, runs=[[0, 5], [22, 27]])
+        self.assertEqual(len(out), 2)
+        self.assertLess(out[0][0], 5); self.assertGreaterEqual(out[1][0], 22)
+    def test_tail_of_previous_utterance_does_not_pull_the_line_back(self):
+        out = m.split_lines(6.0, 18.0, "Me", "Baik, Dewi, tolong eskalasi ke vendor hari ini ya.", runs=[[0, 6.3], [14.2, 18.2]])
+        self.assertAlmostEqual(out[0][0], 14.2, places=1)
+    def test_segment_placed_in_silence_moves_to_next_speech(self):
+        runs = [[0, 6], [16, 20]]
+        self.assertEqual(m.align_to_speech(6.1, 9.0, runs, floor=6.0), (16, 20))      # whisper put it right after the first, but it was spoken at 16 s
+        self.assertEqual(m.align_to_speech(1.0, 5.0, runs), (1.0, 5.0))                 # already over speech: untouched
+        self.assertEqual(m.align_to_speech(3.0, 4.0, []), (3.0, 4.0))
     def test_long_block_becomes_timed_sentence_lines(self):
         out = m.split_lines(0, 30, "Me", "Satu kalimat pendek. " + "Dua kalimat yang jauh lebih panjang dari yang pertama, " * 3 + "selesai.")
         self.assertGreaterEqual(len(out), 2)

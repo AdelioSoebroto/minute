@@ -213,6 +213,33 @@ def fix_terms(transcript):
     if pairs: log("name fixes: " + json.dumps(pairs, ensure_ascii=False))
     return apply_corrections(transcript, pairs) if pairs else transcript
 
+SEEN = HOME / ".mom/seen_terms.json"
+
+def harvest_terms(d: Path):
+    """Passive learning: a capitalised word or acronym that shows up in two different meetings is probably a real name, product or term of this user's world.
+    Remember it so Whisper is nudged toward it and the minutes spell it the same way every time."""
+    f = d / "transcript.md"
+    if not f.exists(): return
+    text = re.sub(r"^# Transcript\s*", "", f.read_text())
+    body = "\n".join(re.sub(r"^\[[\d:]+\] [^:]+: ", "", l) for l in text.splitlines())
+    lower = set(re.findall(r"\b[a-z][a-z']+\b", body))
+    calendar_words = {x.lower() for x in HARI + BULAN + ["January", "February", "March", "April", "May", "June", "July", "August", "October", "December", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]}
+    cands = set()
+    for m_ in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][A-Za-z0-9]{2,}|[A-Z]{2,6})\b", body, re.M):
+        w = m_.group(1)
+        if w.lower() in lower or w.lower() in calendar_words or w.lower() in {x.lower() for x in lexicon()}: continue     # an ordinary word, or already known
+        cands.add(w)
+    if not cands: return
+    try: seen = json.loads(SEEN.read_text())
+    except Exception: seen = {}
+    for w in cands:
+        if d.name not in seen.setdefault(w, []): seen[w].append(d.name)
+    SEEN.parent.mkdir(parents=True, exist_ok=True); SEEN.write_text(json.dumps(seen, ensure_ascii=False, indent=1))
+    have = {g.lower() for g in glossary()}
+    add = [w for w, ms in seen.items() if len(ms) >= 2 and w.lower() not in have]
+    if add:
+        GLOSS.write_text("\n".join(glossary() + add) + "\n"); log("learned terms: " + ", ".join(add))
+
 def learn_from_edits(d: Path):
     """Compare the transcript as heard with what the user corrected it to; remember word swaps so the next transcript gets them right."""
     import difflib
@@ -1104,6 +1131,8 @@ def main():
         ensure_ollama()
         data = make_mom(transcript, d)
         (d / "MoM.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        try: harvest_terms(d)
+        except Exception as e: log("term harvest skipped: " + repr(e))
         print("DONE", d, flush=True); return
     d, tracks = prepare(Path(args[0]).expanduser().resolve())
     if not tracks: raise SystemExit("No audio found in " + str(d))

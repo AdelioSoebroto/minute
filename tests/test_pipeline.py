@@ -186,6 +186,13 @@ class Names(unittest.TestCase):
     def test_apply_corrections(self):
         self.assertEqual(m.apply_corrections("kasih TZ ya, tz kecil, ATZ", {"TZ": "Teazzi"}), "kasih Teazzi ya, tz kecil, ATZ")
         self.assertEqual(m.apply_corrections("ke indo maret dulu", {"Indo Maret": "Indomaret"}), "ke Indomaret dulu")
+    def test_learns_recurring_terms_across_meetings(self):
+        m.SEEN = self.t / "seen.json"
+        for name, tr in (("2026-10-01_0900_a", "[00:00:01] Me: Besok kita deploy Kopikat ke production. Nanti Kopikat dicek ya"), ("2026-10-02_0900_b", "[00:00:01] Me: Hari ini review Kopikat lagi sama Budi")):
+            d = self.t / name; d.mkdir(); (d / "transcript.md").write_text("# Transcript\n\n" + tr + "\n"); m.harvest_terms(d)
+            if name.endswith("_a"): self.assertNotIn("Kopikat", m.glossary())     # once is not enough
+        self.assertIn("Kopikat", m.glossary())
+        self.assertNotIn("Besok", m.glossary())                               # sentence-initial word, also seen lowercase
     def test_learns_word_swaps_from_user_edits(self):
         d = self.t / "m"; d.mkdir()
         (d / "transcript.orig.md").write_text("# Transcript\n\n[00:00:01] Me: Kita kasih TZ ya sama pak Budi\n[00:00:09] Me: Okay lanjut\n")

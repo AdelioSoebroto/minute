@@ -302,6 +302,7 @@ struct SetupView: View {
         }
         .padding(40)
         .task { await refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await refreshPermissions() } }
     }
 
     // MARK: asking, in one place
@@ -336,7 +337,17 @@ struct SetupView: View {
     }
 
     func allowNotifications() async {
-        notifOK = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
+        let c = UNUserNotificationCenter.current()
+        var s = await c.notificationSettings().authorizationStatus
+        if s == .notDetermined {
+            _ = try? await c.requestAuthorization(options: [.alert, .sound])
+            s = await c.notificationSettings().authorizationStatus
+        }
+        notifOK = s == .authorized || s == .provisional
+        if s == .denied {
+            permError = "Notifications are switched off for Minute. Turn on Allow Notifications in System Settings > Notifications > Minute, then come back."
+            if let u = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") { NSWorkspace.shared.open(u) }
+        }
     }
 
     func allowPDF() async {

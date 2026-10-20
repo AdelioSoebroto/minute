@@ -770,7 +770,8 @@ struct MinuteApp: App {
     @StateObject private var lib = Library()
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
-        MenuBarExtra {
+        // Pinned: the icon always stays in the menu bar. Dragging it out (or hiding it) is ignored, and it is re-inserted.
+        MenuBarExtra(isInserted: Binding(get: { true }, set: { _ in })) {
             PanelView(r: r)
         } label: {
             Group {

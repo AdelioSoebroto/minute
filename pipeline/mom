@@ -1039,18 +1039,7 @@ def export_stem(data, d: Path):
     day = "".join(m.groups()) if m else time.strftime("%Y%m%d")
     return f"MOM_{name}_{day}"
 
-def export(d: Path):
-    import docx, copy
-    data = json.loads((d / "MoM.json").read_text())
-    learn_terms(data)
-    tp = template_profile()
-    doc = docx.Document(str(TEMPLATE))
-    fill_template(doc, tp, data)
-    stem = export_stem(data, d)
-    for old in list(d.glob("MOM_*.docx")) + list(d.glob("MOM_*.pdf")) + [d / "MoM.docx", d / "MoM.pdf"]:
-        old.unlink(missing_ok=True)      # replace earlier exports of this meeting (the title may have changed)
-    final_docx, final_pdf = d / f"{stem}.docx", d / f"{stem}.pdf"
-    doc.save(str(final_docx))
+def make_pdf(final_docx: Path, final_pdf: Path):
     stage("Creating PDF")
     # Word opens files in synced or quarantined folders in Protected View, which cannot export. Convert a copy in a plain work folder.
     work = HOME / ".mom/work"; work.mkdir(parents=True, exist_ok=True)
@@ -1080,6 +1069,20 @@ end tell'''
     if not pdf.exists():
         raise SystemExit("PDF export failed (needs Microsoft Word; the Word file was saved as " + final_docx.name + "): " + err)
     shutil.move(str(pdf), str(final_pdf)); out.unlink(missing_ok=True)
+
+def export(d: Path):
+    import docx, copy
+    data = json.loads((d / "MoM.json").read_text())
+    learn_terms(data)
+    tp = template_profile()
+    doc = docx.Document(str(TEMPLATE))
+    fill_template(doc, tp, data)
+    stem = export_stem(data, d)
+    for old in list(d.glob("MOM_*.docx")) + list(d.glob("MOM_*.pdf")) + [d / "MoM.docx", d / "MoM.pdf"]:
+        old.unlink(missing_ok=True)      # replace earlier exports of this meeting (the title may have changed)
+    final_docx, final_pdf = d / f"{stem}.docx", d / f"{stem}.pdf"
+    doc.save(str(final_docx))
+    make_pdf(final_docx, final_pdf)
     (d / "exports.json").write_text(json.dumps({"docx": final_docx.name, "pdf": final_pdf.name}))
     if CFG.get("delete_audio"):          # optional privacy setting: keep only the transcript and minutes
         for a in list(d.glob("mic*.caf")) + list(d.glob("system*.caf")): a.unlink(missing_ok=True)
@@ -1174,6 +1177,17 @@ def main():
         print("HARDWARE " + json.dumps({"chip": chip, "ram": pr["ram"], "tier": pr["tier"], "model": model, "installed": have,
                                         "ollama": bool(shutil.which("ollama")), "size_gb": 5.2 if model.endswith("8b") else 2.6}), flush=True)
         return
+    if args[0] == "--test-pdf":
+        # asks macOS for the Word automation and file-access permissions once, during setup, so exports never interrupt later
+        import docx
+        t = HOME / ".mom/work"; t.mkdir(parents=True, exist_ok=True)
+        dd = docx.Document(); dd.add_paragraph("Minute setup check")
+        src, dst = t / "setup-check.docx", t / "setup-check.pdf"
+        dd.save(str(src))
+        if not Path("/Applications/Microsoft Word.app").exists(): raise SystemExit("Microsoft Word is not installed; you will get Word files without PDFs.")
+        make_pdf(src, dst)
+        src.unlink(missing_ok=True); dst.unlink(missing_ok=True)
+        print("DONE", flush=True); return
     if args[0] == "--doctor":
         print("DOCTOR " + json.dumps(doctor()), flush=True); return
     if args[0] == "--get-whisper": return get_whisper()

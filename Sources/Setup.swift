@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import UserNotifications
 
 // MARK: - Where meetings are stored
 
@@ -184,6 +185,13 @@ struct SetupView: View {
     @State private var deleteAudio = Storage.deleteAudio
     @State private var pendingMove = 0
     @State private var allReady = false
+    @State private var folderOK = false
+    @State private var notifOK = false
+    @State private var pdfOK = false
+    @State private var pdfBusy = false
+    @State private var allowing = false
+    @State private var permError: String?
+    private let wordInstalled = FileManager.default.fileExists(atPath: "/Applications/Microsoft Word.app")
 
     var cloudChosen: Bool { Storage.places().first { $0.url.standardizedFileURL.path == choice.standardizedFileURL.path }?.cloud ?? false }
 
@@ -264,25 +272,79 @@ struct SetupView: View {
     }
 
     var permissions: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Image(systemName: "lock.shield").font(.system(size: 44)).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
-            Text("Allow access").font(.largeTitle.weight(.semibold))
-            Text("macOS asks once. Choose Allow; Minute never sends audio anywhere.").foregroundStyle(.secondary)
-            permissionRow(title: "Microphone", detail: "Your voice, and the room in onsite meetings.", symbol: "mic.fill", done: micOK, action: "Allow") {
-                AVCaptureDevice.requestAccess(for: .audio) { ok in DispatchQueue.main.async { micOK = ok } }
+            Text("Allow access once").font(.largeTitle.weight(.semibold))
+            Text("macOS asks for each of these one time. Choose Allow, and Minute never interrupts you with them again. Nothing is sent anywhere.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            permissionRow(title: "Microphone", detail: "Your voice, and the room in onsite meetings.", symbol: "mic.fill", done: micOK, action: "Allow") { Task { await allowMic() } }
+            permissionRow(title: "Meeting audio", detail: "What the other people say in Teams, Zoom or Meet.", symbol: "speaker.wave.2.fill", done: sysOK, action: "Allow") { Task { await allowSystemAudio() } }
+            permissionRow(title: "Your meetings folder", detail: Storage.root.path.replacingOccurrences(of: home.path, with: "~"), symbol: "folder.fill", done: folderOK, action: "Allow") { allowFolder() }
+            permissionRow(title: "Notifications", detail: "Tells you when a transcript or the minutes are ready.", symbol: "bell.badge.fill", done: notifOK, action: "Allow") { Task { await allowNotifications() } }
+            if wordInstalled {
+                permissionRow(title: "PDF export with Word", detail: pdfBusy ? "Checking with Word…" : "Lets Minute make the PDF through Word. Word may ask for folder access too.", symbol: "doc.richtext.fill", done: pdfOK, action: "Allow") { Task { await allowPDF() } }
             }
-            permissionRow(title: "Meeting audio", detail: "What the other people say in Teams, Zoom or Meet.", symbol: "speaker.wave.2.fill", done: sysOK, action: "Test") {
-                let t = SystemTap()
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent("minute-setup.caf")
-                do { try t.start(url: url); DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { t.stop(); sysOK = true } } catch { sysOK = false }
-            }
-            Spacer()
+            if let e = permError { Text(e).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+            Spacer(minLength: 0)
             HStack {
                 Button("Back") { step = 3 }.glassButton().controlSize(.large)
                 Spacer()
-                Button("Continue") { step = 5 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
+                if !(micOK && sysOK && folderOK && notifOK && (pdfOK || !wordInstalled)) {
+                    Button("Allow All") { Task { await allowAll() } }.glassButton(prominent: true).controlSize(.large).disabled(allowing)
+                }
+                Button("Continue") { step = 5 }.glassButton(prominent: micOK && sysOK && folderOK).controlSize(.large).keyboardShortcut(.defaultAction)
             }
-        }.padding(40)
+        }
+        .padding(40)
+        .task { await refreshPermissions() }
+    }
+
+    // MARK: asking, in one place
+
+    func refreshPermissions() async {
+        micOK = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        sysOK = UserDefaults.standard.bool(forKey: "sysAudioOK")
+        pdfOK = UserDefaults.standard.bool(forKey: "pdfOK")
+        folderOK = (try? FileManager.default.contentsOfDirectory(atPath: Storage.root.path)) != nil
+        let n = await UNUserNotificationCenter.current().notificationSettings()
+        notifOK = n.authorizationStatus == .authorized || n.authorizationStatus == .provisional
+    }
+
+    func allowMic() async { micOK = await AVCaptureDevice.requestAccess(for: .audio) }
+
+    func allowSystemAudio() async {
+        let t = SystemTap()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("minute-setup.caf")
+        do {
+            try t.start(url: url)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            t.stop(); sysOK = true; UserDefaults.standard.set(true, forKey: "sysAudioOK")
+        } catch { sysOK = false; permError = "Meeting audio could not start: \(error.localizedDescription). Allow it in System Settings > Privacy & Security > Screen & System Audio Recording." }
+    }
+
+    func allowFolder() {
+        if let e = Storage.verifyWritable(Storage.root) { folderOK = false; permError = e } else { folderOK = true }
+    }
+
+    func allowNotifications() async {
+        notifOK = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
+    }
+
+    func allowPDF() async {
+        pdfBusy = true; defer { pdfBusy = false }
+        let (code, tail) = await runMom(["--test-pdf"])
+        pdfOK = code == 0
+        UserDefaults.standard.set(pdfOK, forKey: "pdfOK")
+        if !pdfOK { permError = tail }
+    }
+
+    func allowAll() async {
+        allowing = true; permError = nil; defer { allowing = false }
+        if !micOK { await allowMic() }
+        if !sysOK { await allowSystemAudio() }
+        if !folderOK { allowFolder() }
+        if !notifOK { await allowNotifications() }
+        if wordInstalled && !pdfOK { await allowPDF() }
     }
 
     func permissionRow(title: String, detail: String, symbol: String, done: Bool, action: String, perform: @escaping () -> Void) -> some View {

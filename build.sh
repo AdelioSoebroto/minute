@@ -11,6 +11,7 @@ cp Info.plist "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"; if [[ "$ICON" == light ]]; then cp icon/Minute-light.icns "$APP/Contents/Resources/Minute.icns"; else cp icon/Minute.icns "$APP/Contents/Resources/Minute.icns"; fi
 # A stable local identity ("Minute Local") keeps macOS permissions across rebuilds; ad-hoc is the fallback.
 ID=$(security find-identity -p codesigning | awk -F'"' '/"Minute Local"/{print $2; exit}')
+[[ -n "$ID" ]] || echo "NOTE: building with a temporary signature, so macOS will ask for permissions again after every rebuild. Run ./setup-signing.sh once to stop that."
 codesign --force --sign "${ID:--}" "$APP"
 echo "built $APP"
 if [[ "$1" == deploy ]]; then

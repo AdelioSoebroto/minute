@@ -114,3 +114,7 @@ Recording is now four steps: **Record, Transcript, Minutes, Export**. After the 
 ## First run
 
 A new Mac goes through six pages: **Welcome**, **Get Minute ready**, **Where to save**, **Your template**, **Permissions**, and a four-page **tour** (hold to record with a live practice button, check the transcript, edit the minutes, export and find it later). "Get Minute ready" runs `mom --doctor` and lists what is missing (whisper.cpp and ffmpeg and Ollama via Homebrew, the Whisper model about 570 MB, the writing model 2.6 to 5.2 GB by Mac, `python-docx`, and optionally Microsoft Word for PDF). Each item has a **Get** button and **Get everything** installs them in order; nothing downloads until the user clicks. The tour can be replayed from Settings > Welcome Tour & Setup.
+
+## Permissions are asked once
+
+Setup has one "Allow access once" page for everything macOS can ask: Microphone, Meeting audio, your meetings folder, Notifications and PDF export through Word (a one-time check that also grants Word its folder access). "Allow All" walks through them. macOS remembers a permission by the app's code signature, and an ad-hoc signature changes on every build, so **run `./setup-signing.sh` once** before building: it creates a local "Minute Local" signing identity and `build.sh` signs with it, so permissions survive every update.

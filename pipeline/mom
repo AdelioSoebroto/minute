@@ -16,9 +16,15 @@ CFG = {"whisper_model": str(HOME / ".mom/models/ggml-large-v3-turbo.bin"),
 cfgp = HOME / ".mom/config.json"
 if cfgp.exists():
     CFG.update(json.loads(cfgp.read_text()))
+# Everything runs on this Mac and never needs the internet. Talk to Ollama directly even if a VPN or proxy is configured.
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")
 
-def stage(s): print(f"STAGE: {s}", flush=True)
+LOGF = None
+def log(msg):
+    if LOGF:
+        with open(LOGF, "a") as f: f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
+def stage(s): log("STAGE " + s); print(f"STAGE: {s}", flush=True)
 def run(cmd, **kw): return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 def prepare(arg: Path):
@@ -27,18 +33,31 @@ def prepare(arg: Path):
         tracks = []
         mode = (arg / "mode.txt").read_text().strip() if (arg / "mode.txt").exists() else ""
         for name, label in (("mic", "Me" if mode == "Online" else "Speaker"), ("system", "Others")):
-            for ext in ("caf", "wav", "m4a", "mp3"):
-                p = arg / f"{name}.{ext}"
-                if p.exists(): tracks.append((label, p)); break
+            # the app starts a new segment (mic_2.caf ...) when the audio device changes mid-meeting
+            parts = sorted((p for p in arg.glob(f"{name}*.caf") if p.stat().st_size > 4096),
+                           key=lambda p: int(p.stem.rsplit("_", 1)[1]) if "_" in p.stem else 1)
+            if not parts:
+                for ext in ("wav", "m4a", "mp3"):
+                    parts = [p for p in [arg / f"{name}.{ext}"] if p.exists()]
+                    if parts: break
+            if parts: tracks.append((label, parts))
         return arg, tracks
     d = HOME / "Documents/MoM" / (time.strftime("%Y-%m-%d_%H%M_") + re.sub(r"\W+", "-", arg.stem)[:40])
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy2(arg, d / arg.name)
-    return d, [("Speaker", d / arg.name)]
+    return d, [("Speaker", [d / arg.name])]
 
-def to_wav(src: Path, dst: Path):
-    r = run(["ffmpeg", "-y", "-i", str(src), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(dst)])
-    if r.returncode: raise SystemExit(f"ffmpeg failed on {src.name}: {r.stderr[-300:]}")
+def to_wav(srcs, dst: Path):
+    wavs = []
+    for i, src in enumerate(srcs):
+        w = dst.with_name(f"{dst.stem}_seg{i}.wav")
+        r = run(["ffmpeg", "-y", "-i", str(src), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(w)])
+        if r.returncode: raise SystemExit(f"ffmpeg failed on {src.name}: {r.stderr[-300:]}")
+        wavs.append(w)
+    if len(wavs) == 1: wavs[0].rename(dst); return
+    lst = dst.with_suffix(".txt"); lst.write_text("".join(f"file '{w}'\n" for w in wavs))
+    r = run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(dst)])
+    if r.returncode: raise SystemExit("ffmpeg concat failed: " + r.stderr[-300:])
 
 def duration(p: Path):
     r = run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(p)])
@@ -66,12 +85,27 @@ def mean_volume(wav, a, b):
     m = re.search(r"mean_volume: (-?[\d.]+)", r.stderr)
     return float(m.group(1)) if m else -91.0
 
+GLOSS = HOME / ".mom/glossary.txt"
+def glossary():
+    return [l.strip() for l in GLOSS.read_text().splitlines() if l.strip()] if GLOSS.exists() else []
+
+def learn_terms(data):
+    """Remember names and companies from finalised minutes so later transcripts spell them right."""
+    new = [*data.get("telkomsel_names", []), *data.get("third_party_names", []), data.get("telkomsel_unit", ""), data.get("third_party_company", "")]
+    have = glossary(); low = {h.lower() for h in have}
+    add = [n for n in new if n and n.lower() not in low]
+    if add: GLOSS.write_text("\n".join(have + add) + "\n")
+
+def whisper_prompt():
+    terms = ", ".join(glossary()[-40:])
+    return ("Meeting in English and Bahasa Indonesia. Rapat dalam bahasa Indonesia dan English." + (f" Terms: {terms}." if terms else ""))[:600]
+
 HALLU = re.compile(r"^(thanks? for watching|thank you\.?|terima kasih\.?|subtitles? by.*|\W*)$", re.I)
 
 def whisper(chunk: Path, lang: str):
     out = chunk.with_suffix("")
     cmd = ["whisper-cli", "-m", CFG["whisper_model"], "-f", str(chunk), "-l", lang, "-oj", "-of", str(out),
-           "--prompt", "Meeting in English and Bahasa Indonesia. Rapat dalam bahasa Indonesia dan English."]
+           "--prompt", whisper_prompt(), "--suppress-nst"]
     r = run(cmd)
     if r.returncode: raise SystemExit("whisper failed: " + r.stderr[-300:])
     return json.loads(Path(str(out) + ".json").read_text())
@@ -95,17 +129,40 @@ def transcribe(label, wav, tmp, total_done, n_total):
             segs.append((a + s["offsets"]["from"] / 1000, label, t))
     return segs
 
+def drop_echo(segs):
+    """When the meeting plays through speakers the mic hears it too: drop 'Me' lines that repeat a nearby 'Others' line."""
+    import difflib
+    others = [x for x in segs if x[1] == "Others"]
+    if not others: return segs
+    keep = []
+    for x in segs:
+        if x[1] == "Me" and any(abs(o[0] - x[0]) <= 5 and difflib.SequenceMatcher(None, x[2].lower(), o[2].lower()).ratio() >= 0.6 for o in others):
+            log("dropped echo: " + x[2]); continue
+        keep.append(x)
+    return keep
+
 def ts(sec): return f"{int(sec // 3600):02d}:{int(sec % 3600 // 60):02d}:{int(sec % 60):02d}"
 
 def ollama_up():
     try: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=2); return True
     except Exception: return False
 
+def pick_model():
+    """Use the configured model, else any installed one, else say exactly what to install."""
+    try:
+        tags = json.load(urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=5))["models"]
+    except Exception:
+        return
+    names = [m["name"] for m in tags]
+    if CFG["llm"] in names or any(n.split(":")[0] == CFG["llm"] for n in names): return
+    if names: CFG["llm"] = names[0]; log("fallback model " + names[0])
+    else: raise SystemExit(f"No language model installed. Run: ollama pull {CFG['llm']}")
+
 def ensure_ollama():
-    if ollama_up(): return
-    subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if ollama_up(): pick_model(); return
+    subprocess.Popen(["ollama", "serve"], env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434", "NO_PROXY": "*"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(30):
-        if ollama_up(): return
+        if ollama_up(): pick_model(); return
         time.sleep(1)
     raise SystemExit("Could not start Ollama")
 
@@ -152,6 +209,16 @@ def template_examples():
     except Exception:
         return ""
 
+def past_examples(current: Path, n=2):
+    """Topics from the user's own last exported minutes, so new drafts match their wording."""
+    out = []
+    for d in sorted((HOME / "Documents/MoM").glob("*/"), reverse=True):
+        if d == current or not (d / "MoM.pdf").exists(): continue
+        try: out += json.loads((d / "MoM.json").read_text()).get("topics", [])[:3]
+        except Exception: pass
+        if len(out) >= n * 3: break
+    return "\n".join(f"- {t}" for t in out[:n * 3])
+
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 def nice_date(y, m, d):
     suf = "th" if 11 <= d <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(d % 10, "th")
@@ -160,7 +227,12 @@ def nice_date(y, m, d):
 def make_mom(transcript: str, session: Path):
     lang = {"auto": "Write the topics in Bahasa Indonesia, keeping English technical terms as spoken.",
             "en": "Write the topics in English.", "id": "Write the topics in Bahasa Indonesia."}.get(CFG["mom_language"], "Write the topics in Bahasa Indonesia.")
-    system = SYSTEM.format(lang=lang, examples=template_examples())
+    ex = template_examples()
+    mine = past_examples(session)
+    if mine: ex += "\nMore examples from this user's earlier minutes (match their wording):\n" + mine
+    system = SYSTEM.format(lang=lang, examples=ex)
+    gl = glossary()
+    if gl: system += "\nKnown names and terms, use exactly these spellings when the transcript has a similar-sounding word: " + "; ".join(gl[-80:])
     if len(transcript) > 60000:  # map-reduce for very long meetings
         parts, cur = [], ""
         for line in transcript.splitlines(keepends=True):
@@ -174,6 +246,15 @@ def make_mom(transcript: str, session: Path):
         transcript = "\n\n".join(notes)
     stage("Writing the MoM")
     data = json.loads(chat(system, f"TRANSCRIPT:\n{transcript}", SCHEMA))
+    # second pass: check the draft against the transcript and drop anything it does not support
+    try:
+        stage("Checking the minutes against the transcript")
+        checked = json.loads(chat(
+            "You are a strict fact-checker for minutes of meeting. Compare the DRAFT with the TRANSCRIPT. Remove or correct any statement, name, number, date or owner that the transcript does not support. Fix names and terms to match the known spellings" + (": " + "; ".join(gl[-80:]) if gl else "") + ". Keep the style and language. Do not add new topics unless an important decision or action item in the transcript is missing, then add it. Return the corrected draft in the same JSON format.",
+            f"TRANSCRIPT:\n{transcript}\n\nDRAFT:\n{json.dumps(data, ensure_ascii=False)}", SCHEMA))
+        if checked.get("topics"): data = checked
+    except Exception as e:
+        log("verify pass skipped: " + repr(e))
     n = session.name
     try:
         y, mo, d = int(n[:4]), int(n[5:7]), int(n[8:10]); hh, mm = int(n[11:13]), int(n[13:15])
@@ -204,6 +285,7 @@ def set_lines(tc_cell, lines):
 def export(d: Path):
     import docx, copy
     data = json.loads((d / "MoM.json").read_text())
+    learn_terms(data)
     doc = docx.Document(str(HOME / ".mom/template.docx"))
     t = doc.tables[0]
     set_lines(t.rows[0].cells[1], [data.get("agenda", "")])
@@ -290,8 +372,24 @@ def tidy(d: Path):
     f.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     print("DONE", d, flush=True)
 
+def ask(d: Path, question: str):
+    tr = (d / "transcript.md").read_text() if (d / "transcript.md").exists() else ""
+    if not tr: raise SystemExit("This meeting has no transcript yet.")
+    ensure_ollama()
+    mom = (d / "MoM.json").read_text() if (d / "MoM.json").exists() else ""
+    print(chat("You answer questions about one meeting using only its transcript (and minutes). Answer briefly and plainly in the language of the question. Quote the timestamp [hh:mm:ss] where the answer is said. If the meeting does not say, answer that it was not discussed.",
+               f"TRANSCRIPT:\n{tr[:80000]}\n\nMINUTES:\n{mom}\n\nQUESTION: {question}"))
+
 def main():
+    global LOGF
     args = sys.argv[1:]
+    if len(args) >= 2 and not args[0].startswith("--"):
+        pass
+    for a in args:
+        if not a.startswith("--") and Path(a).expanduser().is_dir():
+            LOGF = Path(a).expanduser() / "mom.log"; break
+    if args and args[0] == "--ask":
+        return ask(Path(args[1]).expanduser().resolve(), " ".join(args[2:]))
     if not args: raise SystemExit(__doc__)
     if args[0] == "--tidy":
         return tidy(Path(args[1]).expanduser().resolve())
@@ -308,6 +406,7 @@ def main():
             wav = tmp / f"{label}.wav"; to_wav(src, wav)
             segs += transcribe(label, wav, tmp, 0, len(tracks))
     segs.sort(key=lambda x: x[0])
+    segs = drop_echo(segs)
     lines, prev = [], None
     for s, who, text in segs:
         if prev and prev[0] == who and s - prev[1] < 8: lines[-1] += " " + text
@@ -322,4 +421,12 @@ def main():
     print("DONE", d, flush=True)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        import traceback
+        log(traceback.format_exc())
+        print(f"{type(e).__name__}: {e}", flush=True)
+        sys.exit(1)

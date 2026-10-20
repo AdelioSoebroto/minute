@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import CoreAudio
 import UserNotifications
 
 let home = FileManager.default.homeDirectoryForCurrentUser
@@ -33,12 +34,13 @@ struct MoMData: Codable {
 }
 
 final class Tail: @unchecked Sendable {
-    private let l = NSLock(); private var v = ""
+    private let l = NSLock(); private var v = ""; private var a = ""
     var value: String { get { l.lock(); defer { l.unlock() }; return v } set { l.lock(); v = newValue; l.unlock() } }
+    var all: String { get { l.lock(); defer { l.unlock() }; return a } set { l.lock(); a = newValue; l.unlock() } }
 }
 
 /// Runs the `mom` pipeline, forwarding "STAGE:" lines. Returns (exit status, last output line).
-func runMom(_ args: [String], stage: @escaping @Sendable (String) -> Void) async -> (Int32, String) {
+func runMom(_ args: [String], full: Bool = false, stage: @escaping @Sendable (String) -> Void = { _ in }) async -> (Int32, String) {
     await withCheckedContinuation { cont in
         let p = Process()
         p.executableURL = URL(fileURLWithPath: momCLI)
@@ -48,6 +50,7 @@ func runMom(_ args: [String], stage: @escaping @Sendable (String) -> Void) async
         let tail = Tail()
         out.fileHandleForReading.readabilityHandler = { h in
             guard let s = String(data: h.availableData, encoding: .utf8), !s.isEmpty else { return }
+            tail.all += s
             for line in s.split(separator: "\n") {
                 tail.value = String(line)
                 if line.hasPrefix("STAGE:") { stage(line.dropFirst(6).trimmingCharacters(in: .whitespaces)) }
@@ -55,7 +58,7 @@ func runMom(_ args: [String], stage: @escaping @Sendable (String) -> Void) async
         }
         p.terminationHandler = { p in
             out.fileHandleForReading.readabilityHandler = nil
-            cont.resume(returning: (p.terminationStatus, tail.value))
+            cont.resume(returning: (p.terminationStatus, full ? tail.all.trimmingCharacters(in: .whitespacesAndNewlines) : tail.value))
         }
         do { try p.run() } catch { cont.resume(returning: (-1, error.localizedDescription)) }
     }
@@ -71,6 +74,12 @@ final class Recorder: ObservableObject {
     @Published var micLevel: Float = 0
     @Published var sysLevel: Float = 0
     @Published var history: [Float] = Array(repeating: 0, count: 36)
+    @Published var warning: String?
+    private var micSeg = 1, sysSeg = 1
+    private var sysHeard = false
+    private var outListener: AudioObjectPropertyListenerBlock?
+    private var micObserver: NSObjectProtocol?
+    private var rotateWork: DispatchWorkItem?
     @Published var session: URL?
     @Published var transcript = ""
     @Published var lastDir: URL? = Recorder.latestSession()
@@ -144,8 +153,9 @@ final class Recorder: ObservableObject {
         let dir = momRoot.appendingPathComponent(f.string(from: Date()))
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try mic.start(url: dir.appendingPathComponent("mic.caf"))
-            if mode == .online { try tap.start(url: dir.appendingPathComponent("system.caf")) }
+            micSeg = 1; sysSeg = 1; sysHeard = false; warning = nil
+            try mic.start(url: segURL(dir, "mic", 1))
+            if mode == .online { try tap.start(url: segURL(dir, "system", 1)) }
         } catch {
             mic.stop(); tap.stop()
             phase = .failed(error.localizedDescription); return
@@ -153,6 +163,7 @@ final class Recorder: ObservableObject {
         session = dir
         started = Date(); elapsed = 0
         history = Array(repeating: 0, count: 36)
+        watchDevices()
         phase = .recording
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a meeting")
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -161,13 +172,65 @@ final class Recorder: ObservableObject {
                 self.elapsed = Date().timeIntervalSince(self.started)
                 self.micLevel = self.mic.level.read(); self.sysLevel = self.tap.level.read()
                 self.history.removeFirst(); self.history.append(max(self.micLevel, self.sysLevel))
+                if self.sysLevel > 0.01 { self.sysHeard = true; if self.warning?.hasPrefix("No meeting") == true { self.warning = nil } }
+                if self.mode == .online, !self.sysHeard, self.elapsed > 25, self.warning == nil {
+                    self.warning = "No meeting audio heard yet. Check System Audio Recording in System Settings, or that the meeting is playing."
+                }
             }
+        }
+    }
+
+    private func segURL(_ dir: URL, _ name: String, _ n: Int) -> URL {
+        dir.appendingPathComponent(n == 1 ? "\(name).caf" : "\(name)_\(n).caf")
+    }
+
+    /// If headphones are plugged in or the output/input device changes mid-meeting, carry on in a new file segment.
+    private func watchDevices() {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+                                              mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in Task { @MainActor in self?.scheduleRotate(mic: false) } }
+        outListener = block
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, block)
+        micObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.scheduleRotate(mic: true) }
+        }
+    }
+
+    private func unwatchDevices() {
+        if let b = outListener {
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, b)
+            outListener = nil
+        }
+        if let o = micObserver { NotificationCenter.default.removeObserver(o); micObserver = nil }
+        rotateWork?.cancel()
+    }
+
+    private func scheduleRotate(mic isMic: Bool) {
+        guard isRecording else { return }
+        if !isMic && mode != .online { return }
+        rotateWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in Task { @MainActor in self?.rotate(mic: isMic) } }
+        rotateWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: w)
+    }
+
+    private func rotate(mic isMic: Bool) {
+        guard isRecording, let dir = session else { return }
+        do {
+            if isMic { mic.stop(); micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg)) }
+            else { tap.stop(); sysSeg += 1; try tap.start(url: segURL(dir, "system", sysSeg)) }
+            warning = nil; Haptic.generic()
+        } catch {
+            warning = "Audio device changed and recording could not follow: \(error.localizedDescription)"
         }
     }
 
     func stop() {
         guard isRecording, let dir = session else { return }
         timer?.invalidate(); timer = nil
+        unwatchDevices()
         mic.stop(); tap.stop()
         if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
         try? "\(mode.rawValue)\n".write(to: dir.appendingPathComponent("mode.txt"), atomically: true, encoding: .utf8)
@@ -435,6 +498,10 @@ struct PanelView: View {
             HStack(spacing: 8) {
                 SourceChip(symbol: "mic.fill", label: "Mic", level: r.micLevel)
                 if r.mode == .online { SourceChip(symbol: "speaker.wave.2.fill", label: "Meeting", level: r.sysLevel) }
+            }
+            if let w = r.warning {
+                Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
             }
             HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5) { r.stop(); showWindow() }
         }

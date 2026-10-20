@@ -60,6 +60,16 @@ pipeline/mom           transcription, drafting and document export
 build.sh               build, sign (ad hoc) and install
 ```
 
+## Reliability
+
+- Works with or without internet: capture, transcription, drafting, tidying and the library all run locally (Ollama is addressed on 127.0.0.1 and ignores any VPN or proxy). Only the one-time model downloads need a connection.
+- If headphones are plugged in or the audio device changes mid-meeting, recording continues in a new segment and the pipeline stitches the segments together.
+- A warning appears if no meeting audio is heard 25 seconds into an Online recording (usually a missing System Audio Recording permission).
+- When the meeting plays through speakers, the mic's echo of the meeting is removed from the transcript.
+- The minutes are drafted, then fact-checked against the transcript before you see them. Names and company terms you finalise are remembered (`~/.mom/glossary.txt`) and fed back to the transcriber and drafter; your last exported minutes set the wording style.
+- Audio is written to disk continuously; if anything fails after recording, the audio is kept and **Draft minutes** in the library retries. Each meeting folder has a `mom.log`.
+- Tests: `python3 tests/test_pipeline.py`
+
 ## Privacy
 
 Recording a meeting needs the participants' consent and may be restricted by company policy. Minute never uploads audio or text; keep the generated folders as confidential as the meetings themselves.

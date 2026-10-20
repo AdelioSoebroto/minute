@@ -264,6 +264,9 @@ struct LibraryView: View {
     @State private var query = ""
     @State private var tab = 0
     @State private var confirmDelete: Meeting?
+    @State private var question = ""
+    @State private var answer = ""
+    @State private var asking = false
 
     var filtered: [Meeting] {
         guard !query.isEmpty else { return lib.meetings }
@@ -344,7 +347,7 @@ struct LibraryView: View {
             }.padding(.horizontal, 24).padding(.vertical, 14)
             Divider()
             Group {
-                if tab == 0 { minutes(m) } else { TranscriptView(text: m.transcript, query: query) }
+                if tab == 0 { minutes(m) } else { VStack(spacing: 0) { TranscriptView(text: m.transcript, query: query); if !m.transcript.isEmpty { askBar(m) } } }
             }
             Divider()
             HStack(spacing: 10) {
@@ -360,6 +363,32 @@ struct LibraryView: View {
             }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
         }
         .id(m.id)
+        .onChange(of: selection) { _, _ in answer = ""; question = "" }
+    }
+
+    func askBar(_ m: Meeting) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !answer.isEmpty || asking {
+                Group { if asking { HStack { ProgressView().controlSize(.small); Text("Thinking…").foregroundStyle(.secondary) } } else { Text(answer).textSelection(.enabled) } }
+                    .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
+            }
+            HStack {
+                Image(systemName: "sparkles").foregroundStyle(.secondary)
+                TextField("Ask about this meeting…", text: $question).textFieldStyle(.plain).onSubmit { ask(m) }
+                if !question.isEmpty { Button { ask(m) } label: { Image(systemName: "arrow.up.circle.fill") }.buttonStyle(.borderless).disabled(asking) }
+            }.padding(10).background(RoundedRectangle(cornerRadius: 10).stroke(.quaternary))
+        }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+    }
+
+    func ask(_ m: Meeting) {
+        let q = question.trimmingCharacters(in: .whitespaces); guard !q.isEmpty, !asking else { return }
+        asking = true; answer = ""
+        Task {
+            let (code, out) = await runMom(["--ask", m.dir.path, q], full: true)
+            answer = code == 0 ? out : "Couldn't answer: \(out)"
+            asking = false
+        }
     }
 
     @ViewBuilder func minutes(_ m: Meeting) -> some View {

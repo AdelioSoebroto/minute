@@ -45,6 +45,14 @@ class WeekdayDates(unittest.TestCase):
         import datetime
         self.assertEqual(m.fix_weekday_dates("Rabu, 21 Oktober 2026", datetime.date(2026, 10, 20)), "Rabu, 21 Oktober 2026")
 
+class Annotate(unittest.TestCase):
+    def test_spells_out_relative_dates(self):
+        import datetime
+        out = m.annotate_dates("I will prepare it tomorrow. Targetnya jangan lewat Jumat, ya. Hari Sabtu malam.", datetime.date(2026, 10, 20))
+        self.assertIn("tomorrow [Rabu 21 Oktober 2026]", out)
+        self.assertIn("Jumat [Jumat 23 Oktober 2026]", out)
+        self.assertIn("Sabtu [Sabtu 24 Oktober 2026]", out)
+
 class Dates(unittest.TestCase):
     def test_ordinals(self):
         self.assertEqual(m.nice_date(2026, 10, 19), "October 19th, 2026")

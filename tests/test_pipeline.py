@@ -36,6 +36,11 @@ class WeekdayDates(unittest.TestCase):
         d0 = datetime.date(2026, 10, 20)   # Tuesday
         self.assertEqual(m.fix_weekday_dates("paling lambat hari Jumat, 21 Oktober 2026", d0), "paling lambat hari Jumat, 23 Oktober 2026")
         self.assertEqual(m.fix_weekday_dates("pada Sabtu (22 Oktober 2026)", d0), "pada Sabtu (24 Oktober 2026)")
+    def test_trusts_date_when_weekday_was_not_said(self):
+        import datetime
+        d0 = datetime.date(2026, 10, 20)
+        self.assertEqual(m.fix_weekday_dates("pada Senin, 21 Oktober 2026", d0, {"jumat"}), "pada Rabu, 21 Oktober 2026")
+        self.assertEqual(m.fix_weekday_dates("hari Jumat, 21 Oktober 2026", d0, {"jumat"}), "hari Jumat, 23 Oktober 2026")
     def test_keeps_consistent_dates(self):
         import datetime
         self.assertEqual(m.fix_weekday_dates("Rabu, 21 Oktober 2026", datetime.date(2026, 10, 20)), "Rabu, 21 Oktober 2026")

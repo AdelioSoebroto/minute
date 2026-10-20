@@ -726,8 +726,18 @@ struct StepExport: View {
     }
 }
 
+/// Opening the app again (Spotlight, Finder, `open`) shows the Meetings window, since a menu bar app has no Dock icon to click.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var showLibrary: (() -> Void)?
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { AppDelegate.showLibrary?() }
+        return true
+    }
+}
+
 @main
 struct MinuteApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var r = Recorder()
     @StateObject private var lib = Library()
     @Environment(\.openWindow) private var openWindow
@@ -745,6 +755,7 @@ struct MinuteApp: App {
                 }
             }
             .onAppear {
+                AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
                 if let d = ProcessInfo.processInfo.environment["MINUTE_DEMO"] {
                     if d == "draft", let dir = ProcessInfo.processInfo.environment["MINUTE_DIR"] { r.draft(URL(fileURLWithPath: dir)) } else { r.demo(d) }
                     openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)

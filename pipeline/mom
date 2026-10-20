@@ -539,6 +539,13 @@ def set_lines(tc_cell, lines):
             if ts_: ts_[0].text = line; ts_[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
         tc.append(p)
 
+def export_stem(data, d: Path):
+    """MOM_<Document name>_<yyyymmdd>, e.g. MOM_Update_SSL_Ondeck_20261020. The date is the meeting date."""
+    name = re.sub(r"[^\w]+", "_", data.get("agenda", "") or "", flags=re.UNICODE).strip("_")[:60].strip("_") or "Meeting"
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", d.name)
+    day = "".join(m.groups()) if m else time.strftime("%Y%m%d")
+    return f"MOM_{name}_{day}"
+
 def export(d: Path):
     import docx, copy
     data = json.loads((d / "MoM.json").read_text())
@@ -564,14 +571,15 @@ def export(d: Path):
         ts_[0].text = topic; ts_[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
         anchor.addnext(p); anchor = p
     for p in items: p._p.getparent().remove(p._p)
-    out = d / "MoM.docx"
-    doc.save(str(out))
+    stem = export_stem(data, d)
+    for old in list(d.glob("MOM_*.docx")) + list(d.glob("MOM_*.pdf")) + [d / "MoM.docx", d / "MoM.pdf"]:
+        old.unlink(missing_ok=True)      # replace earlier exports of this meeting (the title may have changed)
+    final_docx, final_pdf = d / f"{stem}.docx", d / f"{stem}.pdf"
+    doc.save(str(final_docx))
     stage("Creating PDF")
-    final_pdf = d / "MoM.pdf"
-    if final_pdf.exists(): final_pdf.unlink()
     # Word opens files in synced or quarantined folders in Protected View, which cannot export. Convert a copy in a plain work folder.
     work = HOME / ".mom/work"; work.mkdir(parents=True, exist_ok=True)
-    out = work / "MoM.docx"; shutil.copy2(d / "MoM.docx", out)
+    out = work / "MoM.docx"; shutil.copy2(final_docx, out)
     run(["xattr", "-c", str(out)])
     pdf = work / "MoM.pdf"
     if pdf.exists(): pdf.unlink()
@@ -595,8 +603,9 @@ end tell'''
         run(["osascript", "-e", 'tell application "Microsoft Word" to close every document saving no'])
         time.sleep(2)
     if not pdf.exists():
-        raise SystemExit("PDF export failed (needs Microsoft Word; the Word file was saved): " + err)
+        raise SystemExit("PDF export failed (needs Microsoft Word; the Word file was saved as " + final_docx.name + "): " + err)
     shutil.move(str(pdf), str(final_pdf)); out.unlink(missing_ok=True)
+    (d / "exports.json").write_text(json.dumps({"docx": final_docx.name, "pdf": final_pdf.name}))
     print("DONE", d, flush=True)
 
 # ---------- tidy: clean up spacing, wording, punctuation of an edited MoM.json ----------

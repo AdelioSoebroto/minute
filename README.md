@@ -16,7 +16,7 @@ Minute is a regular app (Dock icon, `~/Applications/Minute.app`). Its main windo
 
 **All meetings** (menu bar) opens the library: every past meeting with its minutes (the page preview) and transcript, searchable across both, with Open Word / PDF, re-edit and re-export, and Move to Bin.
 
-Output lands in `~/Documents/MoM/<date_time>/`: `mic.caf`, `system.caf`, `transcript.md`, `MoM.json`, `MoM.docx`, `MoM.pdf`.
+Output lands in `~/Documents/MoM/<date_time>/`: `mic.caf`, `system.caf`, `transcript.md`, `MoM.json`, and the exports named `MOM_<Document_name>_<yyyymmdd>.docx` / `.pdf` (for example `MOM_Update_SSL_Ondeck_20261020.pdf`; the name comes from the agenda, the date is the meeting date).
 
 ## Requirements
 

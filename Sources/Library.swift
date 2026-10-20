@@ -232,6 +232,12 @@ struct Meeting: Identifiable, Hashable {
     func hash(into h: inout Hasher) { h.combine(dir) }
 }
 
+/// The exported Word/PDF of a meeting: MOM_<name>_<yyyymmdd>.ext (older runs used MoM.ext).
+func exportedFile(in dir: URL, ext: String) -> URL? {
+    let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+    return files.first { $0.pathExtension == ext && ($0.lastPathComponent.hasPrefix("MOM_") || $0.lastPathComponent == "MoM.\(ext)") }
+}
+
 @MainActor
 final class Library: ObservableObject {
     @Published var meetings: [Meeting] = []
@@ -246,8 +252,8 @@ final class Library: ObservableObject {
             let data = (try? Data(contentsOf: d.appendingPathComponent("MoM.json"))).flatMap { try? JSONDecoder().decode(MoMData.self, from: $0) }
             let tr = (try? String(contentsOf: d.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
             return Meeting(dir: d, date: date, data: data,
-                           hasDocx: fm.fileExists(atPath: d.appendingPathComponent("MoM.docx").path),
-                           hasPdf: fm.fileExists(atPath: d.appendingPathComponent("MoM.pdf").path),
+                           hasDocx: exportedFile(in: d, ext: "docx") != nil,
+                           hasPdf: exportedFile(in: d, ext: "pdf") != nil,
                            transcript: tr.replacingOccurrences(of: "# Transcript\n\n", with: ""))
         }.sorted { $0.date > $1.date }
     }
@@ -424,8 +430,8 @@ struct LibraryView: View {
             }
             Divider()
             GlassGroup(spacing: 12) { HStack(spacing: 10) {
-                if m.hasDocx { Button { NSWorkspace.shared.open(m.dir.appendingPathComponent("MoM.docx")) } label: { Label("Word", systemImage: "doc.text") }.glassButton() }
-                if m.hasPdf { Button { NSWorkspace.shared.open(m.dir.appendingPathComponent("MoM.pdf")) } label: { Label("PDF", systemImage: "doc.richtext") }.glassButton() }
+                if m.hasDocx { Button { if let f = exportedFile(in: m.dir, ext: "docx") { NSWorkspace.shared.open(f) } } label: { Label("Word", systemImage: "doc.text") }.glassButton() }
+                if m.hasPdf { Button { if let f = exportedFile(in: m.dir, ext: "pdf") { NSWorkspace.shared.open(f) } } label: { Label("PDF", systemImage: "doc.richtext") }.glassButton() }
                 Button { NSWorkspace.shared.activateFileViewerSelecting([m.dir]) } label: { Label("Finder", systemImage: "folder") }.glassButton()
                 Spacer()
                 Button(role: .destructive) { confirmDelete = m } label: { Label("Delete", systemImage: "trash") }.glassButton()

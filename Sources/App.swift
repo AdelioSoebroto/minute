@@ -274,6 +274,22 @@ final class Recorder: ObservableObject {
         topics = d.topics.map { Topic(text: $0) }
     }
 
+    /// Diagnostic: capture system audio for 4 s while a system sound plays and write the peak level to ~/.mom/selftest.txt.
+    func selfTestSystemAudio() {
+        let out = home.appendingPathComponent(".mom/selftest.txt")
+        let t = SystemTap()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("minute-selftest.caf")
+        do { try t.start(url: url) } catch { try? "tap failed: \(error.localizedDescription)\n".write(to: out, atomically: true, encoding: .utf8); NSApp.terminate(nil); return }
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = ["/System/Library/Sounds/Glass.aiff"]; try? p.run()
+        var peak: Float = 0
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in peak = max(peak, t.level.read()) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            t.stop()
+            try? "peak level \(peak)\n".write(to: out, atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+    }
+
     func reviewLast() { if let d = Recorder.latestSession(), loadDraft(d) { phase = .review } }
 
     private func lines(_ s: String) -> [String] { s.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
@@ -692,7 +708,7 @@ struct StepReview: View {
 
 struct StepExport: View {
     @ObservedObject var r: Recorder
-    func open(_ name: String) { if let d = r.session { NSWorkspace.shared.open(d.appendingPathComponent(name)) } }
+    func open(_ ext: String) { if let d = r.session, let f = exportedFile(in: d, ext: ext) { NSWorkspace.shared.open(f) } }
     var body: some View {
         VStack(spacing: 18) {
             Spacer()
@@ -704,9 +720,9 @@ struct StepExport: View {
                 HStack(spacing: 10) {
                     GlassGroup(spacing: 12) {
                         HStack(spacing: 10) {
-                            Button { open("MoM.docx") } label: { Label("Open Word", systemImage: "doc.text").frame(minWidth: 100) }.glassButton(prominent: true)
-                            Button { open("MoM.pdf") } label: { Label("Open PDF", systemImage: "doc.richtext").frame(minWidth: 100) }.glassButton()
-                            Button { NSWorkspace.shared.activateFileViewerSelecting([d.appendingPathComponent("MoM.pdf")]) } label: { Label("Show in Finder", systemImage: "folder") }.glassButton()
+                            Button { open("docx") } label: { Label("Open Word", systemImage: "doc.text").frame(minWidth: 100) }.glassButton(prominent: true)
+                            Button { open("pdf") } label: { Label("Open PDF", systemImage: "doc.richtext").frame(minWidth: 100) }.glassButton()
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([exportedFile(in: d, ext: "pdf") ?? d]) } label: { Label("Show in Finder", systemImage: "folder") }.glassButton()
                         }
                     }
                 }.controlSize(.large)
@@ -770,6 +786,7 @@ struct MinuteApp: App {
                 AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
                 AppDelegate.isBusy = { r.isRecording || r.isBusy }
                 if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == nil { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }   // show the main window at launch
+                if ProcessInfo.processInfo.environment["MINUTE_SELFTEST"] != nil { r.selfTestSystemAudio(); return }
                 if let d = ProcessInfo.processInfo.environment["MINUTE_DEMO"] {
                     if d == "draft", let dir = ProcessInfo.processInfo.environment["MINUTE_DIR"] { r.draft(URL(fileURLWithPath: dir)) } else { r.demo(d) }
                     openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)

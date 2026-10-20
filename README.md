@@ -7,8 +7,10 @@ A quiet menu-bar app for macOS that records a meeting, writes the minutes on-dev
 ## How it works
 
 1. **Record.** Hold the red button in the menu bar for a second to start. *Online* mode captures the meeting audio (Teams, Zoom, Meet, anything playing on the Mac) plus your mic as two separate tracks. *Onsite* mode captures the mic only. Holding (0.8 s to start, 1.5 s to stop) means you can't start or stop by accident; Quit is disabled while recording and the Mac stays awake.
-2. **Review.** When you stop, Minute transcribes English and Bahasa Indonesia (mixed is fine) and drafts the minutes. The window slides to a review step where you can edit every field and check against the transcript.
+2. **Review.** When you stop, Minute transcribes English and Bahasa Indonesia (mixed is fine) and drafts the minutes. The window slides to a review step that shows the page exactly as the Word document will look (logo, table, fonts); click anywhere on it to edit. **Tidy up** fixes spacing, punctuation and wording with the on-device model (undoable), and can run automatically on export. A transcript panel sits beside the page to check against.
 3. **Export.** One click fills your own Word template and exports a `.docx` and a `.pdf`.
+
+**All meetings** (menu bar) opens the library: every past meeting with its minutes (the page preview) and transcript, searchable across both, with Open Word / PDF, re-edit and re-export, and Move to Bin.
 
 Output lands in `~/Documents/MoM/<date_time>/`: `mic.caf`, `system.caf`, `transcript.md`, `MoM.json`, `MoM.docx`, `MoM.pdf`.
 
@@ -40,6 +42,7 @@ Config (optional) lives in `~/.mom/config.json`:
 
 ```bash
 mom <session-folder | audio-file>   # transcribe and draft MoM.json
+mom --tidy <session-folder>         # clean up spacing, punctuation and wording in MoM.json
 mom --export <session-folder>       # MoM.json + template.docx -> MoM.docx + MoM.pdf
 ```
 
@@ -51,6 +54,7 @@ mom --export <session-folder>       # MoM.json + template.docx -> MoM.docx + MoM
 
 ```
 Sources/App.swift      SwiftUI menu-bar panel and the Record / Review / Export window
+Sources/Library.swift  page preview, transcript view and the meetings library
 Sources/Capture.swift  system-audio tap and microphone recording
 pipeline/mom           transcription, drafting and document export
 build.sh               build, sign (ad hoc) and install

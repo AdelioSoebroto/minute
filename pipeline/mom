@@ -241,9 +241,60 @@ end tell'''
         raise SystemExit("PDF export failed (needs Microsoft Word): " + r.stderr[-300:])
     print("DONE", d, flush=True)
 
+# ---------- tidy: clean up spacing, wording, punctuation of an edited MoM.json ----------
+def tidy_text(t, sentence=True):
+    t = re.sub(r"\s+", " ", t or "").strip()
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)                    # no space before punctuation
+    t = re.sub(r"([,;:!?])(?=[^\s\d,;:!?)\]\"'])", r"\1 ", t)   # one space after
+    if sentence and t:
+        t = t[0].upper() + t[1:]
+        if t[-1] not in ".!?:)": t += "."
+    return t
+
+def tidy_name(n):
+    n = re.sub(r"\s+", " ", n or "").strip(" ,;")
+    return n.title() if n and (n.islower() or n.isupper()) else n
+
+def tidy_names(names):
+    out, seen = [], set()
+    for n in names:
+        n = tidy_name(n)
+        if n and n.lower() not in seen: seen.add(n.lower()); out.append(n)
+    return out
+
+TIDY_SYSTEM = """You are a careful copy editor for formal corporate minutes of meeting. You receive the topic list of a MoM.
+Fix spelling, grammar, spacing, punctuation and awkward wording. Make each topic a clear, concise, formal sentence or two (passive voice is fine). Keep the language of each topic (Bahasa Indonesia stays Bahasa Indonesia; keep English technical terms). Keep every fact, name, number, date, time and owner exactly; never add or remove information. Keep the same number of topics in the same order. If a topic is already good, return it unchanged."""
+
+def tidy(d: Path):
+    f = d / "MoM.json"
+    data = json.loads(f.read_text())
+    (d / "MoM.pre-tidy.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    stage("Tidying")
+    data["agenda"] = tidy_text(data.get("agenda", ""), sentence=False)
+    data["telkomsel_unit"] = tidy_text(data.get("telkomsel_unit", ""), sentence=False)
+    data["third_party_company"] = tidy_text(data.get("third_party_company", ""), sentence=False)
+    data["telkomsel_names"] = tidy_names(data.get("telkomsel_names", []))
+    data["third_party_names"] = tidy_names(data.get("third_party_names", []))
+    topics = [tidy_text(t) for t in data.get("topics", []) if t.strip()]
+    if topics:
+        try:
+            stage("Polishing the wording")
+            ensure_ollama()
+            schema = {"type": "object", "required": ["topics"], "properties": {"topics": {"type": "array", "items": {"type": "string"}}}}
+            out = json.loads(chat(TIDY_SYSTEM, json.dumps({"topics": topics}, ensure_ascii=False), schema))
+            new = [tidy_text(t) for t in out.get("topics", [])]
+            if len(new) == len(topics) and all(new): topics = new   # only accept a faithful, same-length rewrite
+        except Exception as e:
+            print("tidy: wording pass skipped:", e, flush=True)
+    data["topics"] = topics
+    f.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    print("DONE", d, flush=True)
+
 def main():
     args = sys.argv[1:]
     if not args: raise SystemExit(__doc__)
+    if args[0] == "--tidy":
+        return tidy(Path(args[1]).expanduser().resolve())
     if args[0] == "--export":
         return export(Path(args[1]).expanduser().resolve())
     d, tracks = prepare(Path(args[0]).expanduser().resolve())

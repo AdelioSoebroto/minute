@@ -1,0 +1,9 @@
+build/
+.DS_Store
+*.docx
+*.pdf
+*.caf
+*.wav
+*.bin
+MoM.json
+transcript.md

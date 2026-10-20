@@ -44,10 +44,14 @@ final class Playback: ObservableObject {
 /// Lets Edit > Undo bring back a deleted line or topic.
 final class UndoBox: NSObject { static let shared = UndoBox() }
 
+struct JumpRequest: Equatable { let id: UUID; let token = UUID() }
+
 struct TranscriptPane: View {
     @Binding var lines: [TLine]
     let dir: URL?
     var events: [ScreenEvent] = []
+    var jump: JumpRequest? = nil
+    @State private var flash: UUID?
     @StateObject private var playback = Playback()
     @Environment(\.undoManager) private var undo
     @State private var query = ""
@@ -99,6 +103,7 @@ struct TranscriptPane: View {
                 ContentUnavailableView("Nothing was heard", systemImage: "waveform.slash",
                                        description: Text("The recording had no speech Minute could pick up. Check the microphone, and for online meetings that the meeting audio was playing."))
             } else {
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(items) { item in
@@ -111,6 +116,14 @@ struct TranscriptPane: View {
                     }.padding(.horizontal, 10).padding(.vertical, 6)
                 }
                 .softScrollEdges()
+                .onChange(of: jump) { _, j in
+                    guard let j, let i = lines.firstIndex(where: { $0.id == j.id }) else { return }
+                    query = ""
+                    withAnimation(.spring(duration: 0.4)) { proxy.scrollTo(j.id, anchor: .center); flash = j.id }
+                    if Playback.available(in: dir), playback.playingID != j.id { playback.toggle(lines[i], next: i + 1 < lines.count ? lines[i + 1] : nil, in: dir) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if flash == j.id { withAnimation { flash = nil } } }
+                }
+                }
             }
         }
         .onDisappear { playback.stop() }
@@ -192,7 +205,7 @@ struct TranscriptPane: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(playback.playingID == line.id ? Color.accentColor.opacity(0.10) : (query.isEmpty || !matches(line) ? Color.clear : Color.yellow.opacity(0.22))))
+            .fill(flash == line.id ? Color.orange.opacity(0.22) : playback.playingID == line.id ? Color.accentColor.opacity(0.10) : (query.isEmpty || !matches(line) ? Color.clear : Color.yellow.opacity(0.22))))
         .opacity(matches(line) ? 1 : 0.35)
     }
 

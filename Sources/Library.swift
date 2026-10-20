@@ -74,6 +74,7 @@ struct MinutesPaper: View {
     @Binding var tpCompany: String
     @Binding var topics: [Topic]
     let editable: Bool
+    var onJump: ((String) -> Void)? = nil
 
     private let w: CGFloat = 560
     @Environment(\.undoManager) private var undo
@@ -136,6 +137,10 @@ struct MinutesPaper: View {
                             TextField("Describe the topic", text: $topics[i].text, axis: .vertical).textFieldStyle(.plain)
                                 .font(PaperAssets.font(12)).padding(.horizontal, 6).padding(.vertical, 4)
                                 .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.07)))
+                            if let jump = onJump {
+                                Button { jump(t.text) } label: { Image(systemName: "text.quote").foregroundStyle(Color.accentColor) }
+                                    .buttonStyle(.borderless).help("Show where this was said").accessibilityLabel("Show where topic \(i + 1) was said")
+                            }
                             Button {
                                 Haptic.tick()
                                 let removed = topics[i], at = i, binding = $topics

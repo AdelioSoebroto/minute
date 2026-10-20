@@ -99,6 +99,8 @@ struct MeetingWorkspace: View {
     @State private var answer = ""
     @State private var asking = false
     @State private var showAsk = false
+    @State private var jump: JumpRequest?
+    @State private var notice: String?
 
     init(meeting: Meeting, lib: Library, r: Recorder, delete: @escaping () -> Void) {
         self.meeting = meeting; self.lib = lib; self.r = r; self.delete = delete
@@ -159,7 +161,7 @@ struct MeetingWorkspace: View {
                     .buttonStyle(.borderless).foregroundStyle(showAsk ? Color.accentColor : .secondary)
                     .disabled(editor.tLines.isEmpty).help("Ask a question about this meeting")
             }.padding(.horizontal, 16).padding(.top, 10)
-            TranscriptPane(lines: $editor.tLines, dir: meeting.dir, events: editor.screenEvents)
+            TranscriptPane(lines: $editor.tLines, dir: meeting.dir, events: editor.screenEvents, jump: jump)
             if showAsk { askBar }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -196,6 +198,7 @@ struct MeetingWorkspace: View {
                 if let b = editor.busy { ProgressView().controlSize(.small); Text(b).font(.callout).foregroundStyle(.secondary) }
                 else if let e = editor.error { Text(e).font(.caption).foregroundStyle(.red).lineLimit(2) }
                 Spacer()
+                if editor.hasMinutes { shareMenu }
                 if editor.hasMinutes {
                     Button { editor.tidy { lib.refresh() } } label: { Label("Tidy up", systemImage: "sparkles") }.glassButton().disabled(locked)
                         .help("Fix spacing, punctuation and wording with the on-device model")
@@ -210,6 +213,54 @@ struct MeetingWorkspace: View {
                 }
             }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12)
         }
+    }
+
+    private func showWhere(_ text: String) {
+        guard let i = TLine.bestMatch(for: text, in: editor.tLines) else { flashNotice("Couldn't find where this was said"); return }
+        if mode == 1 { mode = 2 }
+        jump = JumpRequest(id: editor.tLines[i].id)
+    }
+
+    private func flashNotice(_ s: String) {
+        notice = s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { if notice == s { notice = nil } }
+    }
+
+    private func markdown(withTranscript: Bool = false) -> String {
+        func l(_ s: String) -> [String] { s.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+        return ShareText.markdown(agenda: editor.agenda, date: editor.date, time: editor.time, internalNames: l(editor.telkNames), unit: editor.telkUnit,
+                                  externalNames: l(editor.tpNames), company: editor.tpCompany,
+                                  topics: editor.topics.map(\.text).filter { !$0.isEmpty }, transcript: withTranscript ? editor.tLines : [])
+    }
+
+    private func copy(_ s: String, _ msg: String) {
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string); Haptic.confirm(); flashNotice(msg)
+    }
+
+    private func saveFile(_ name: String, _ text: String) {
+        editor.save()
+        let u = meeting.dir.appendingPathComponent(name)
+        do { try text.write(to: u, atomically: true, encoding: .utf8); NSWorkspace.shared.activateFileViewerSelecting([u]) }
+        catch { flashNotice("Couldn't save: \(error.localizedDescription)") }
+    }
+
+    private var shareMenu: some View {
+        Menu {
+            Button("Copy as Markdown") { copy(markdown(), "Copied as Markdown") }
+            Button("Copy as plain text") { copy(ShareText.plain(markdown()), "Copied as plain text") }
+            Button("Copy with transcript (Markdown)") { copy(markdown(withTranscript: true), "Copied with transcript") }
+            Divider()
+            Button("Save Markdown file") { saveFile("MoM.md", markdown(withTranscript: true)) }
+            if !editor.tLines.isEmpty { Button("Save subtitles (.srt)") { saveFile("transcript.srt", TLine.srt(editor.tLines)) } }
+            Divider()
+            Button("Email the minutes…") {
+                editor.save()
+                var items: [Any] = [ShareText.plain(markdown())]
+                if let pdf = exportedFile(in: meeting.dir, ext: "pdf") { items.append(pdf) }
+                NSSharingService(named: .composeEmail)?.perform(withItems: items)
+            }
+        } label: { Label(notice ?? "Share", systemImage: notice == nil ? "square.and.arrow.up" : "checkmark") }
+            .menuStyle(.button).fixedSize()
     }
 
     private var askBar: some View {

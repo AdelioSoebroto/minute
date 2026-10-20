@@ -12,11 +12,13 @@ from pathlib import Path
 HOME = Path.home()
 CFG = {"whisper_model": str(HOME / ".mom/models/ggml-large-v3-turbo.bin"),
        "llm": "qwen3:8b", "mom_language": "auto", "ctx": 32768,
-       "keep_audio": True, "title": "", "my_name": "Adelio Ferhan", "my_unit": "IT Digital Advertising Management",
+       "keep_audio": True, "title": "", "my_name": "", "my_unit": "",
        "root": str(HOME / "Documents/MoM"), "delete_audio": False}
 cfgp = HOME / ".mom/config.json"
+LLM_PINNED = False      # True when the user chose a model themselves; otherwise it follows this Mac's hardware tier
 if cfgp.exists():
-    CFG.update(json.loads(cfgp.read_text()))
+    _c = json.loads(cfgp.read_text()); LLM_PINNED = "llm" in _c
+    CFG.update(_c)
 # Everything runs on this Mac and never needs the internet. Talk to Ollama directly even if a VPN or proxy is configured.
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + os.environ.get("PATH", "")
@@ -36,10 +38,12 @@ def device_profile():
     if limit < 100 or low_power or (not on_ac and pct < 30): mode = "eco"
     elif not on_ac: mode = "balanced"
     else: mode = "full"
-    cap = 32768 if ram >= 48 else 16384 if ram >= 20 else 8192
-    return {"mode": mode, "ram": round(ram), "ac": on_ac, "pct": pct, "thermal_limit": limit, "ctx_cap": cap,
+    # Hardware tier: picks the model size once, so even a small Mac runs the same careful multi-pass pipeline
+    tier, model = ("standard", "qwen3:8b") if ram >= 15 else ("light", "qwen3:4b")
+    cap = 32768 if ram >= 48 else 16384 if ram >= 20 else 8192 if tier == "standard" else 6144
+    return {"tier": tier, "model": model, "mode": mode, "ram": round(ram), "ac": on_ac, "pct": pct, "thermal_limit": limit, "ctx_cap": cap,
             "beam": 1 if mode == "eco" else 2 if mode == "balanced" else 5, "threads": 2 if mode == "eco" else 4,
-            "verify": mode != "eco", "nice": 15 if mode == "eco" else 10}
+            "verify": limit >= 100, "nice": 15 if mode == "eco" else 10}
 
 PROFILE = None
 def profile():
@@ -254,6 +258,7 @@ def pick_model():
     except Exception:
         return
     names = [m["name"] for m in tags]
+    if not LLM_PINNED and profile()["model"] in names: CFG["llm"] = profile()["model"]
     small = CFG.get("llm_small", "qwen3:8b")
     if profile()["mode"] == "eco" and profile()["ram"] <= 24 and small in names and small != CFG["llm"]:
         CFG["llm"] = small; log("eco: using smaller model " + small); return
@@ -278,14 +283,14 @@ def chat(system, user):
         txt = json.load(r)["message"]["content"]
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
 
-SYSTEM = """You write minutes of meeting (MoM) for a Telkomsel team from a raw speech-to-text transcript. The transcript mixes English and Bahasa Indonesia and may contain recognition errors; infer obvious corrections (product names, technical terms) but never invent facts.
+SYSTEM = """You write minutes of meeting (MoM) for {team} from a raw speech-to-text transcript. The transcript mixes English and Bahasa Indonesia and may contain recognition errors; infer obvious corrections (product names, technical terms) but never invent facts.
 Return JSON with:
 - agenda: short meeting title, in the form "<Category> - <Subject>" using words actually said in the meeting, never copied from the examples.
-- telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. Telkomsel = internal staff; third party = vendors or other companies, and anyone said to be 'from' or 'dari' a company other than Telkomsel belongs under third party with that company. If unsure, put in telkomsel_names. Never guess names. Never list the labels Me, Others or Speaker as people.
+- telkomsel_names / third_party_names: people who attended, only names actually said in the transcript. {internal} = internal staff; third party = vendors or other companies, and anyone said to be 'from' or 'dari' a company other than {internal} belongs under third party with that company. If unsure, put in telkomsel_names. Never guess names. Never list the labels Me, Others or Speaker as people.
 - telkomsel_unit / third_party_company: unit or company name if stated, else "".
 - topics: the "Topic Discussed" list. One numbered item per distinct topic, each a full sentence or two in the style of the examples: concise, formal, third person, passive voice. Merge only true duplicates; never drop a decision, action item, owner, deadline or number: every one that the transcript contains must appear in the topics. Keep common English business words as spoken (follow up, deploy, approval, change request); never translate them literally. Cover the issue/background, what was agreed or decided, who does what, and dates/times/numbers exactly as stated. Include action items and owners inside the sentences ("... akan dilakukan oleh X paling lambat <tanggal>").
 'Me' is the person who recorded ({me}); 'Others' are the other participants (voices not separated); 'Speaker' is an onsite room recording. Never write Me, Others or Speaker in the output: use the person's real name, or 'peserta rapat' when unknown.
-Style examples of topics (Bahasa Indonesia):
+Style examples of topics (match their tone and level of detail):
 {examples}
 {lang}"""
 
@@ -309,10 +314,12 @@ def chat(system, user, schema=None):
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
 
 def template_examples():
+    tp = template_profile()
+    if tp.get("generic"): return ""
     try:
         import docx
-        d = docx.Document(str(HOME / ".mom/template.docx"))
-        return "\n".join(f"{i + 1}. {p.text}" for i, p in enumerate(p for p in d.paragraphs if p.style.name == "List Paragraph" and p.text.strip()))
+        d = docx.Document(str(TEMPLATE))
+        return "\n".join(f"{i + 1}. {p.text}" for i, p in enumerate(p for p in d.paragraphs if p.style.name == tp["topic_style"] and p.text.strip()))
     except Exception:
         return ""
 
@@ -416,12 +423,13 @@ def analyse(transcript: str, meta: str):
     return json.loads(chat(system, f"MEETING INFO: {meta}\n\nTRANSCRIPT:\n{transcript}", ANALYSIS_SCHEMA))
 
 def make_mom(transcript: str, session: Path):
-    lang = {"auto": "Write the topics in Bahasa Indonesia, keeping English technical terms as spoken.",
+    lang = {"auto": ("Write the topics in the main language of the meeting, keeping English technical terms as spoken." if template_profile().get("generic") else "Write the topics in Bahasa Indonesia, keeping English technical terms as spoken."),
             "en": "Write the topics in English.", "id": "Write the topics in Bahasa Indonesia."}.get(CFG["mom_language"], "Write the topics in Bahasa Indonesia.")
     ex = template_examples()
     mine = past_examples(session)
     if mine: ex += "\nMore examples from this user's earlier minutes (match their wording):\n" + mine
-    system = SYSTEM.format(lang=lang, examples=ex, me=CFG["my_name"])
+    tp = template_profile()
+    system = SYSTEM.format(lang=lang, examples=ex, me=CFG["my_name"] or "the user", team=tp["team"], internal=tp["internal"])
     gl = glossary()
     if gl: system += "\nKnown names and terms, SPELLING REFERENCE ONLY (use these spellings when the transcript has a similar-sounding word). These people and terms are NOT necessarily in this meeting: never add anyone to the attendee lists unless the transcript mentions them: " + "; ".join(gl[-80:])
     if len(transcript) > (profile()["ctx_cap"] - 5000) * 2.8:  # map-reduce for very long meetings
@@ -490,7 +498,7 @@ def make_mom(transcript: str, session: Path):
         data[k] = [re.sub(r"\s*\(.*?\)", "", x).strip() for x in data.get(k, [])]
     tel = [x.lower() for x in data.get("telkomsel_names", [])]
     data["third_party_names"] = [x for x in data.get("third_party_names", []) if not any(t == x.lower() or t.startswith(x.lower() + " ") for t in tel)]
-    if not data["third_party_names"] and data.get("third_party_company", "").lower() == "telkomsel": data["third_party_company"] = ""
+    if not data["third_party_names"] and data.get("third_party_company", "").lower() == tp["internal"].lower(): data["third_party_company"] = ""
     try:    # completeness: every deadline/date said in the meeting must show up in the minutes
         import datetime
         day0 = datetime.date(int(session.name[:4]), int(session.name[5:7]), int(session.name[8:10]))
@@ -522,22 +530,283 @@ def make_mom(transcript: str, session: Path):
         data.setdefault("date", ""); data.setdefault("time", "")
     return data
 
+# ---------- templates: learn any Word template, or build a clean generic one ----------
+TEMPLATE = HOME / ".mom/template.docx"
+TPL_JSON = HOME / ".mom/template.json"
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+SLOTS = ["agenda", "date", "time", "internal_names", "internal_unit", "external_names", "external_company"]
+DEFAULT_LABELS = {"agenda": "Meeting Agenda", "date": "Date", "time": "Time", "participants": "List of Participants",
+                  "internal": "Internal", "external": "External", "topics": "Topics Discussed"}
+# the layout the built-in generic template uses (and the fallback if nothing else is known)
+GENERIC_MAP = {"agenda": [0, 0, 1], "date": [0, 1, 1], "time": [0, 2, 1], "internal_names": [0, 5, 0], "internal_unit": [0, 5, 2],
+               "external_names": [0, 7, 0], "external_company": [0, 7, 2]}
+
+def template_profile():
+    """What the current template looks like: where each field goes and how it is labelled. Learned once, stored in ~/.mom/template.json."""
+    try:
+        tp = json.loads(TPL_JSON.read_text())
+    except Exception:
+        tp = None
+    if tp is None:
+        if TEMPLATE.exists():
+            try: tp = learn_template(TEMPLATE, install=False)
+            except Exception as e: log("template learn failed: " + repr(e))
+        if tp is None:
+            tp = {"generic": True, "map": GENERIC_MAP, "labels": DEFAULT_LABELS, "topic_style": "List Number", "topic_heading": -1, "org": ""}
+    tp["labels"] = {**DEFAULT_LABELS, **(tp.get("labels") or {})}
+    org = (tp.get("org") or "").strip()
+    tp["team"] = f"a {org} team" if org else "a team"
+    tp["internal"] = org or re.sub(r"[:：]\s*$", "", tp["labels"]["internal"]).strip() or "Internal"
+    tp.setdefault("topic_style", "List Paragraph")
+    return tp
+
+def _unique_cells(row):
+    out = []
+    for ci, c in enumerate(row.cells):
+        if not any(c._tc is o[1]._tc for o in out): out.append((ci, c))
+    return out
+
+def doc_outline(doc):
+    lines = []
+    for ti, t in enumerate(doc.tables):
+        for ri, row in enumerate(t.rows):
+            for ci, c in _unique_cells(row):
+                lines.append(f"table {ti} row {ri} col {ci}: {c.text.strip()[:70]!r}")
+    for i, p in enumerate(doc.paragraphs):
+        if p.text.strip() or p.style.name not in ("Normal", "Body Text"):
+            lines.append(f"paragraph {i} [{p.style.name}]: {p.text.strip()[:90]!r}")
+    return "\n".join(lines)
+
+LEARN_SCHEMA = {"type": "object", "required": ["org", "labels", "slots", "topic_style", "topic_heading"], "properties": {
+    "org": {"type": "string"},
+    "labels": {"type": "object", "properties": {k: {"type": "string"} for k in DEFAULT_LABELS}},
+    "slots": {"type": "object", "properties": {k: {"type": "object", "required": ["table", "row", "col"], "properties": {
+        "table": {"type": "integer"}, "row": {"type": "integer"}, "col": {"type": "integer"}}} for k in SLOTS}},
+    "topic_style": {"type": "string"}, "topic_heading": {"type": "integer"}}}
+
+LEARN_SYSTEM = """You study a Word template for minutes of meeting and say where each piece of information goes. Cells and paragraphs are listed as 'table T row R col C' or 'paragraph N [style]', with their current text (it may be example text from an old meeting).
+Return JSON:
+- org: the organisation the template belongs to (from labels such as 'Telkomsel:' or a company name in it), else "".
+- labels: the template's own wording for: agenda (e.g. 'Meeting Agenda', 'Subject'), date, time, participants (the participants heading), internal (the heading above our own side's attendees), external (the heading above the other side's attendees, e.g. '3rd party', 'Guests'), topics (the heading above the discussion list, e.g. 'Topic Discussed:'). Copy the text exactly; use "" when absent.
+- slots: the table cell where each VALUE is written (never the label cell): agenda, date, time, internal_names (cell listing our attendees, one per line), internal_unit (cell with their unit or team), external_names (the other side's attendees), external_company (their company). Use table, row, col exactly as listed. Leave a slot out if the template has no such place.
+- topic_style: the paragraph style of the numbered discussion items (e.g. 'List Paragraph', 'List Number'), exactly as listed.
+- topic_heading: the paragraph number of the heading above the discussion items, or -1."""
+
+def _find_value_cell(doc, pattern):
+    """Fallback: the cell to the right of a label cell that matches pattern."""
+    for ti, t in enumerate(doc.tables):
+        for ri, row in enumerate(t.rows):
+            cells = _unique_cells(row)
+            for k, (ci, c) in enumerate(cells[:-1]):
+                if re.search(pattern, c.text.strip(), re.I) and len(c.text.strip()) < 40:
+                    return [ti, ri, cells[k + 1][0]]
+    return None
+
+def _valid_slot(doc, rc, labels):
+    try:
+        t, r, c = rc
+        cell = doc.tables[t].rows[r].cells[c]
+        return cell.text.strip().rstrip(":").lower() not in {v.rstrip(":").lower() for v in labels.values() if v}
+    except Exception:
+        return False
+
+def extract_logo(path: Path):
+    """Pull the first picture (usually the logo) out of a docx and keep it as ~/.mom/logo.png for the preview."""
+    import zipfile
+    out = HOME / ".mom/logo.png"
+    try:
+        with zipfile.ZipFile(path) as z:
+            media = sorted(n for n in z.namelist() if n.startswith("word/media/") and n.lower().rsplit(".", 1)[-1] in ("png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff"))
+            if not media: out.unlink(missing_ok=True); return None
+            raw = HOME / ".mom/work" / ("logo_raw." + media[0].rsplit(".", 1)[-1]); raw.parent.mkdir(parents=True, exist_ok=True)
+            raw.write_bytes(z.read(media[0]))
+        r = run(["/usr/bin/sips", "-s", "format", "png", str(raw), "--out", str(out)])
+        raw.unlink(missing_ok=True)
+        return out if out.exists() else None
+    except Exception as e:
+        log("logo extract failed: " + repr(e)); return None
+
+def learn_template(path: Path, install=True, org=""):
+    """Read a user's Word template (with the local model), work out where each field goes, and remember it."""
+    import docx
+    doc = docx.Document(str(path))
+    if not doc.tables and not doc.paragraphs: raise SystemExit("This Word file looks empty.")
+    stage("Reading your template")
+    raw = {}
+    try:
+        ensure_ollama()
+        raw = json.loads(chat(LEARN_SYSTEM, doc_outline(doc), LEARN_SCHEMA))
+    except (Exception, SystemExit) as e:
+        log("template analysis by model failed, using label matching: " + repr(e))
+    labels = {k: (raw.get("labels", {}).get(k) or "").strip() for k in DEFAULT_LABELS}
+    slots = {}
+    for k in SLOTS:
+        s_ = (raw.get("slots") or {}).get(k)
+        rc = [s_["table"], s_["row"], s_["col"]] if isinstance(s_, dict) and all(x in s_ for x in ("table", "row", "col")) else None
+        if rc and not _valid_slot(doc, rc, labels): rc = None
+        slots[k] = rc
+    for k, pat in (("agenda", r"agenda|subject|topic of|title|meeting name|perihal|acara"), ("date", r"^(date|tanggal|hari)"), ("time", r"^(time|waktu|jam|pukul)")):
+        if not slots.get(k): slots[k] = _find_value_cell(doc, pat)
+    slots = {k: v for k, v in slots.items() if v}
+    if not any(slots.get(k) for k in ("agenda", "date", "time")) and not doc.tables:
+        log("no table found; fields other than the discussion will not be placed")
+    styles = {p.style.name for p in doc.paragraphs}
+    ts = raw.get("topic_style") if raw.get("topic_style") in styles else None
+    items = [p for p in doc.paragraphs if p.style.name == (ts or "List Paragraph") and p.text.strip()]
+    if not ts:
+        ts = next((n for n in ("List Paragraph", "List Number", "List Bullet") if n in styles), "List Number")
+    th = raw.get("topic_heading", -1)
+    if not (isinstance(th, int) and 0 <= th < len(doc.paragraphs)):
+        th = next((i for i, p in enumerate(doc.paragraphs) if re.search(r"topic|discuss|pembahasan|agenda pembicaraan", p.text, re.I) and len(p.text) < 60), -1)
+    org = (org or raw.get("org") or "").strip()
+    tp = {"name": path.stem, "org": org, "generic": False, "labels": labels, "map": {k: v for k, v in slots.items()},
+          "topic_style": ts, "topic_heading": th, "has_examples": bool(items)}
+    found = [k for k in SLOTS if k in slots]
+    tp["found"] = found
+    if install:
+        if TEMPLATE.exists() and path.resolve() != TEMPLATE.resolve():
+            shutil.copy2(TEMPLATE, HOME / ".mom/template.prev.docx")
+        TEMPLATE.parent.mkdir(parents=True, exist_ok=True)
+        if path.resolve() != TEMPLATE.resolve(): shutil.copy2(path, TEMPLATE)
+        extract_logo(TEMPLATE)
+        TPL_JSON.write_text(json.dumps(tp, ensure_ascii=False, indent=2))
+    return tp
+
+def make_generic_template(logo: Path = None, org: str = ""):
+    """A clean, neutral Minutes of Meeting page with the user's logo (or organisation name) at the top."""
+    import docx
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    doc = docx.Document()
+    sec = doc.sections[0]
+    sec.left_margin = sec.right_margin = Inches(0.9); sec.top_margin = Inches(0.8); sec.bottom_margin = Inches(0.8)
+    base = doc.styles["Normal"]; base.font.name = "Calibri"; base.font.size = Pt(11)
+    base.element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
+    ink, accent, mist = RGBColor(0x1D, 0x1D, 0x1F), "1F3A5F", "F2F4F7"
+    head = doc.paragraphs[0] if doc.paragraphs else doc.add_paragraph()
+    if logo and Path(logo).exists():
+        head.add_run().add_picture(str(logo), height=Inches(0.55))
+    elif org:
+        r = head.add_run(org); r.bold = True; r.font.size = Pt(16); r.font.color.rgb = RGBColor(0x1F, 0x3A, 0x5F)
+    head.paragraph_format.space_after = Pt(10)
+    title = doc.add_paragraph(); title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = title.add_run("MINUTES OF MEETING"); r.bold = True; r.font.size = Pt(15); r.font.color.rgb = ink
+    title.paragraph_format.space_after = Pt(10)
+
+    def shade(cell, fill):
+        pr = cell._tc.get_or_add_tcPr(); sh_ = OxmlElement("w:shd")
+        sh_.set(qn("w:val"), "clear"); sh_.set(qn("w:color"), "auto"); sh_.set(qn("w:fill"), fill); pr.append(sh_)
+    def borders(table, color="C9CED6"):
+        pr = table._tbl.tblPr; b = OxmlElement("w:tblBorders")
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            e = OxmlElement(f"w:{edge}"); e.set(qn("w:val"), "single"); e.set(qn("w:sz"), "4"); e.set(qn("w:space"), "0"); e.set(qn("w:color"), color); b.append(e)
+        pr.append(b)
+    def pad(table):
+        pr = table._tbl.tblPr; m = OxmlElement("w:tblCellMar")
+        for edge, v in (("top", 70), ("left", 110), ("bottom", 70), ("right", 110)):
+            e = OxmlElement(f"w:{edge}"); e.set(qn("w:w"), str(v)); e.set(qn("w:type"), "dxa"); m.append(e)
+        pr.append(m)
+    def put(cell, text, bold=False, color=None, size=11):
+        cell.text = ""; p = cell.paragraphs[0]; p.paragraph_format.space_after = Pt(0)
+        r_ = p.add_run(text); r_.bold = bold; r_.font.size = Pt(size)
+        if color: r_.font.color.rgb = color
+
+    t = doc.add_table(rows=8, cols=4); borders(t); pad(t); t.autofit = False
+    widths = [Inches(1.5), Inches(1.9), Inches(1.7), Inches(1.6)]
+    for row in t.rows:
+        for i, c in enumerate(row.cells): c.width = widths[i]
+    for ri, label in enumerate(("Meeting Agenda", "Date", "Time")):
+        put(t.rows[ri].cells[0], label, bold=True); shade(t.rows[ri].cells[0], mist)
+        t.rows[ri].cells[1].merge(t.rows[ri].cells[3])
+    t.rows[3].cells[0].merge(t.rows[3].cells[3]); put(t.rows[3].cells[0], "List of Participants", bold=True); shade(t.rows[3].cells[0], mist)
+    t.rows[3].cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    white = RGBColor(0xFF, 0xFF, 0xFF)
+    for bar, (l, r_) in ((4, ("Internal participants", "Unit")), (6, ("External participants", "Company"))):
+        a = t.rows[bar].cells[0].merge(t.rows[bar].cells[1]); b = t.rows[bar].cells[2].merge(t.rows[bar].cells[3])
+        put(a, l, bold=True, color=white, size=10); put(b, r_, bold=True, color=white, size=10); shade(a, accent); shade(b, accent)
+    for names in (5, 7):
+        t.rows[names].cells[0].merge(t.rows[names].cells[1]); t.rows[names].cells[2].merge(t.rows[names].cells[3])
+    sp = doc.add_paragraph(); sp.paragraph_format.space_after = Pt(2)
+    h = doc.add_paragraph(); hr = h.add_run("Topics Discussed"); hr.bold = True; hr.font.size = Pt(12); hr.font.color.rgb = RGBColor(0x1F, 0x3A, 0x5F)
+    heading_idx = len(doc.paragraphs) - 1
+    doc.add_paragraph("Discussion point", style="List Number")
+    stage("Saving the template")
+    if TEMPLATE.exists(): shutil.copy2(TEMPLATE, HOME / ".mom/template.prev.docx")
+    TEMPLATE.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(TEMPLATE))
+    if logo and Path(logo).exists():
+        run(["/usr/bin/sips", "-s", "format", "png", str(logo), "--out", str(HOME / ".mom/logo.png")])
+    else:
+        (HOME / ".mom/logo.png").unlink(missing_ok=True)
+    tp = {"name": "Clean template", "org": org, "generic": True, "labels": {**DEFAULT_LABELS, "internal": "Internal participants", "external": "External participants"},
+          "map": GENERIC_MAP, "topic_style": "List Number", "topic_heading": heading_idx, "has_examples": False, "found": list(SLOTS)}
+    TPL_JSON.write_text(json.dumps(tp, ensure_ascii=False, indent=2))
+    return tp
+
+def fill_template(doc, tp, data):
+    """Write the minutes into the template wherever the profile says each field lives."""
+    import copy
+    values = {"agenda": [data.get("agenda", "")], "date": [data.get("date", "")], "time": [data.get("time", "")],
+              "internal_names": data.get("telkomsel_names", []), "internal_unit": [data.get("telkomsel_unit", "")],
+              "external_names": data.get("third_party_names", []), "external_company": [data.get("third_party_company", "")]}
+    for k, lines in values.items():
+        rc = tp["map"].get(k)
+        if not rc: continue
+        try: set_lines(doc.tables[rc[0]].rows[rc[1]].cells[rc[2]], lines)
+        except Exception as e: log(f"could not fill {k}: {e!r}")
+    style = tp.get("topic_style", "List Paragraph")
+    items = [p for p in doc.paragraphs if p.style.name == style]
+    topics = data.get("topics", [])
+    xml_space = "{http://www.w3.org/XML/1998/namespace}space"
+    def clone(proto, text):
+        p = copy.deepcopy(proto)
+        runs = p.findall(W_NS + "r")
+        for r in runs[1:]: p.remove(r)
+        if runs:
+            ts_ = runs[0].findall(W_NS + "t")
+            for x in ts_[1:]: runs[0].remove(x)
+            if ts_: ts_[0].text = text; ts_[0].set(xml_space, "preserve")
+        else:
+            r = p.makeelement(W_NS + "r", {}); t_ = r.makeelement(W_NS + "t", {}); t_.text = text; t_.set(xml_space, "preserve"); r.append(t_); p.append(r)
+        return p
+    if items:
+        proto = items[0]._p; anchor = items[-1]._p
+        for topic in topics:
+            p = clone(proto, topic); anchor.addnext(p); anchor = p
+        for p in items: p._p.getparent().remove(p._p)
+    else:
+        paras = doc.paragraphs
+        th = tp.get("topic_heading", -1)
+        anchor = paras[th]._p if 0 <= th < len(paras) else (paras[-1]._p if paras else None)
+        if anchor is not None:
+            for i, topic in enumerate(topics):
+                np_ = doc.add_paragraph(f"{i + 1}. {topic}")._p
+                np_.getparent().remove(np_); anchor.addnext(np_); anchor = np_
+
+
 # ---------- export: MoM.json + template.docx -> MoM.docx + MoM.pdf ----------
 def set_lines(tc_cell, lines):
     """Replace the text of a table cell with one paragraph per line, keeping the first paragraph's formatting."""
     import copy
+    xml_space = "{http://www.w3.org/XML/1998/namespace}space"
     paras = tc_cell.paragraphs
     proto = copy.deepcopy(paras[0]._p)
     for p in paras: p._p.getparent().remove(p._p)
     tc = tc_cell._tc
     for line in (lines or [""]):
         p = copy.deepcopy(proto)
-        runs = p.findall("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r")
+        runs = p.findall(W_NS + "r")
         for r in runs[1:]: p.remove(r)
         if runs:
-            ts_ = runs[0].findall("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+            ts_ = runs[0].findall(W_NS + "t")
             for t in ts_[1:]: runs[0].remove(t)
-            if ts_: ts_[0].text = line; ts_[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            if ts_: ts_[0].text = line; ts_[0].set(xml_space, "preserve")
+            else:
+                t_ = runs[0].makeelement(W_NS + "t", {}); t_.text = line; t_.set(xml_space, "preserve"); runs[0].append(t_)
+        else:
+            r = p.makeelement(W_NS + "r", {}); t_ = r.makeelement(W_NS + "t", {}); t_.text = line; t_.set(xml_space, "preserve"); r.append(t_); p.append(r)
         tc.append(p)
 
 def export_stem(data, d: Path):
@@ -551,27 +820,9 @@ def export(d: Path):
     import docx, copy
     data = json.loads((d / "MoM.json").read_text())
     learn_terms(data)
-    doc = docx.Document(str(HOME / ".mom/template.docx"))
-    t = doc.tables[0]
-    set_lines(t.rows[0].cells[1], [data.get("agenda", "")])
-    set_lines(t.rows[1].cells[1], [data.get("date", "")])
-    set_lines(t.rows[2].cells[1], [data.get("time", "")])
-    set_lines(t.rows[5].cells[0], data.get("telkomsel_names", []))
-    set_lines(t.rows[5].cells[1], [data.get("telkomsel_unit", "")])
-    set_lines(t.rows[7].cells[0], data.get("third_party_names", []))
-    set_lines(t.rows[7].cells[2], [data.get("third_party_company", "")])
-    items = [p for p in doc.paragraphs if p.style.name == "List Paragraph"]
-    proto = copy.deepcopy(items[0]._p); anchor = items[-1]._p
-    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-    for topic in data.get("topics", []):
-        p = copy.deepcopy(proto)
-        runs = p.findall(W + "r")
-        for r in runs[1:]: p.remove(r)
-        ts_ = runs[0].findall(W + "t")
-        for x in ts_[1:]: runs[0].remove(x)
-        ts_[0].text = topic; ts_[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-        anchor.addnext(p); anchor = p
-    for p in items: p._p.getparent().remove(p._p)
+    tp = template_profile()
+    doc = docx.Document(str(TEMPLATE))
+    fill_template(doc, tp, data)
     stem = export_stem(data, d)
     for old in list(d.glob("MOM_*.docx")) + list(d.glob("MOM_*.pdf")) + [d / "MoM.docx", d / "MoM.pdf"]:
         old.unlink(missing_ok=True)      # replace earlier exports of this meeting (the title may have changed)
@@ -691,6 +942,32 @@ def main():
         return tidy(Path(args[1]).expanduser().resolve())
     if args[0] == "--export":
         return export(Path(args[1]).expanduser().resolve())
+    if args[0] == "--hardware":
+        pr = profile(); model = CFG["llm"] if LLM_PINNED else pr["model"]
+        have = False
+        if ollama_up() or shutil.which("ollama"):
+            have = model in sh(["ollama", "list"]) if shutil.which("ollama") else False
+        chip = sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]).strip()
+        print("HARDWARE " + json.dumps({"chip": chip, "ram": pr["ram"], "tier": pr["tier"], "model": model, "installed": have,
+                                        "ollama": bool(shutil.which("ollama")), "size_gb": 5.2 if model.endswith("8b") else 2.6}), flush=True)
+        return
+    if args[0] == "--pull-model":
+        model = CFG["llm"] if LLM_PINNED else profile()["model"]
+        stage("Downloading the language model")
+        r = subprocess.run(["ollama", "pull", model], capture_output=True, text=True)
+        if r.returncode: raise SystemExit("Download failed: " + (r.stderr or r.stdout)[-200:])
+        print("DONE", flush=True); return
+    if args[0] == "--learn-template":
+        org = args[args.index("--org") + 1] if "--org" in args else ""
+        tp = learn_template(Path(args[1]).expanduser().resolve(), org=org)
+        print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"]}), flush=True)
+        unload(); return
+    if args[0] == "--make-template":
+        org = args[args.index("--org") + 1] if "--org" in args else ""
+        logo = Path(args[args.index("--logo") + 1]).expanduser() if "--logo" in args else None
+        tp = make_generic_template(logo, org)
+        print("TEMPLATE " + json.dumps({"found": tp["found"], "org": tp["org"], "labels": tp["labels"]}), flush=True)
+        return
     d, tracks = prepare(Path(args[0]).expanduser().resolve())
     if not tracks: raise SystemExit("No audio found in " + str(d))
     if not Path(CFG["whisper_model"]).exists(): raise SystemExit("Whisper model missing: " + CFG["whisper_model"])

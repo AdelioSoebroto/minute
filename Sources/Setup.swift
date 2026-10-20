@@ -177,7 +177,7 @@ struct SetupView: View {
     @ObservedObject var r: Recorder
     @Environment(\.dismiss) private var dismiss
     @StateObject private var mover = StorageMover()
-    @State private var step = 0
+    @State private var step = Int(ProcessInfo.processInfo.environment["MINUTE_SETUPSTEP"] ?? "") ?? 0
     @State private var choice = Storage.root
     @State private var micOK = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     @State private var sysOK = false
@@ -188,13 +188,15 @@ struct SetupView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) { ForEach(0..<3) { i in Capsule().fill(i <= step ? Color.accentColor : Color.secondary.opacity(0.25)).frame(height: 4) } }
+            HStack(spacing: 6) { ForEach(0..<5) { i in Capsule().fill(i <= step ? Color.accentColor : Color.secondary.opacity(0.25)).frame(height: 4) } }
                 .padding(.horizontal, 40).padding(.top, 26).animation(.spring(duration: 0.4), value: step)
             ZStack {
                 Group {
                     switch step {
                     case 0: location
-                    case 1: permissions
+                    case 1: templateStep
+                    case 2: hardwareStep
+                    case 3: permissions
                     default: finish
                     }
                 }
@@ -231,6 +233,33 @@ struct SetupView: View {
         }.padding(40)
     }
 
+    var templateStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "doc.richtext").font(.system(size: 44)).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
+            Text("Your minutes template").font(.largeTitle.weight(.semibold))
+            Text("Bring your own Word template and Minute learns where everything goes, or start from a clean one and add your logo.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TemplatePicker(showSkip: true) { step = 2 }
+            Spacer(minLength: 0)
+            HStack { Button("Back") { step = 0 }.glassButton().controlSize(.large); Spacer() }
+        }.padding(40)
+    }
+
+    var hardwareStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "cpu").font(.system(size: 44)).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
+            Text("Tuned for this Mac").font(.largeTitle.weight(.semibold))
+            Text("Everything runs on your Mac. Minute picks the language model that suits its memory.").foregroundStyle(.secondary)
+            HardwareStep()
+            Spacer()
+            HStack {
+                Button("Back") { step = 1 }.glassButton().controlSize(.large)
+                Spacer()
+                Button("Continue") { step = 3 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
+            }
+        }.padding(40)
+    }
+
     var permissions: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "lock.shield").font(.system(size: 44)).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
@@ -246,9 +275,9 @@ struct SetupView: View {
             }
             Spacer()
             HStack {
-                Button("Back") { step = 0 }.glassButton().controlSize(.large)
+                Button("Back") { step = 2 }.glassButton().controlSize(.large)
                 Spacer()
-                Button("Continue") { step = 2 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
+                Button("Continue") { step = 4 }.glassButton(prominent: true).controlSize(.large).keyboardShortcut(.defaultAction)
             }
         }.padding(40)
     }
@@ -288,6 +317,7 @@ struct SettingsView: View {
     @State private var choice = Storage.root
     @State private var deleteAudio = Storage.deleteAudio
     @State private var count = Storage.meetingFolders(in: Storage.root).count
+    @State private var tplVersion = 0
 
     var changed: Bool { choice.standardizedFileURL.path != Storage.root.standardizedFileURL.path }
 
@@ -319,6 +349,17 @@ struct SettingsView: View {
             } header: { Text("Change location") }
 
             Section {
+                let tp = TemplateProfile.current
+                LabeledContent("Current template") { Text(tp.generic ? "Clean template" : "Your Word template").foregroundStyle(.secondary) }
+                if tp.generic, let logo = PaperAssets.logo {
+                    LabeledContent("Logo") { Image(nsImage: logo).resizable().scaledToFit().frame(height: 28) }
+                }
+                TemplatePicker { tplVersion += 1 }.id(tplVersion)
+            } header: { Text("Template") }
+
+            Section { HardwareStep() } header: { Text("This Mac") }
+
+            Section {
                 Toggle("Delete recordings after the minutes are exported", isOn: $deleteAudio)
                     .onChange(of: deleteAudio) { _, v in Storage.deleteAudio = v }
                 Text("Keeps the transcript and minutes only. Useful when the folder syncs to the cloud.").font(.caption).foregroundStyle(.secondary)
@@ -328,7 +369,7 @@ struct SettingsView: View {
                 Button("Run Setup Again…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
             } header: { Text("Setup") }
         }
-        .formStyle(.grouped).frame(width: 540, height: 620)
+        .formStyle(.grouped).frame(width: 560, height: 760)
         .onAppear { choice = Storage.root; count = Storage.meetingFolders(in: Storage.root).count }
     }
 }

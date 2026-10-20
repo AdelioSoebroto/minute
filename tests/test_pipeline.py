@@ -109,5 +109,54 @@ class Segments(unittest.TestCase):
             self.assertEqual([p.name for p in lab["Me"]], ["mic.caf", "mic_2.caf", "mic_10.caf"])
             self.assertIn("Others", lab)
 
+class Templates(unittest.TestCase):
+    """The generic template is built and filled inside a scratch home, never the user's real ~/.mom."""
+    def setUp(self):
+        import tempfile
+        self.t = Path(tempfile.mkdtemp()); (self.t / ".mom").mkdir()
+        self.old = (m.HOME, m.TEMPLATE, m.TPL_JSON)
+        m.HOME = self.t; m.TEMPLATE = self.t / ".mom/template.docx"; m.TPL_JSON = self.t / ".mom/template.json"
+    def tearDown(self):
+        m.HOME, m.TEMPLATE, m.TPL_JSON = self.old
+    DATA = {"agenda": "Roadmap - Q4", "date": "October 20th, 2026", "time": "10:00 AM", "telkomsel_names": ["Dewi", "Budi"], "telkomsel_unit": "Product",
+            "third_party_names": ["John"], "third_party_company": "Acme", "topics": ["First point.", "Second point.", "Third point."]}
+    def test_generic_template_has_no_logo_and_no_telkomsel(self):
+        import docx
+        (self.t / ".mom/logo.png").write_bytes(b"old")
+        m.make_generic_template(None, "")
+        self.assertFalse((self.t / ".mom/logo.png").exists())
+        d = docx.Document(str(m.TEMPLATE))
+        self.assertNotIn("telkomsel", " ".join(c.text for r in d.tables[0].rows for c in r.cells).lower())
+        self.assertEqual(len(d.inline_shapes), 0)
+    def test_generic_template_uses_logo_when_given(self):
+        import docx
+        logo = self.t / "logo.png"
+        import subprocess; subprocess.run(["/usr/bin/sips", "-s", "format", "png", "/System/Library/CoreServices/DefaultDesktop.heic", "--resampleWidth", "80", "--out", str(logo)], capture_output=True)
+        if not logo.exists(): self.skipTest("no sample image")
+        m.make_generic_template(logo, "Acme")
+        self.assertEqual(len(docx.Document(str(m.TEMPLATE)).inline_shapes), 1)
+        self.assertTrue((self.t / ".mom/logo.png").exists())
+    def test_fill_generic(self):
+        import docx
+        tp = m.make_generic_template(None, "Acme")
+        doc = docx.Document(str(m.TEMPLATE)); m.fill_template(doc, tp, self.DATA)
+        cells = [c.text for r in doc.tables[0].rows for c in r.cells]
+        for want in ("Roadmap - Q4", "October 20th, 2026", "10:00 AM", "Dewi\nBudi", "Product", "John", "Acme"):
+            self.assertIn(want, cells)
+        items = [p.text for p in doc.paragraphs if p.style.name == "List Number"]
+        self.assertEqual(items, self.DATA["topics"])
+    def test_fill_without_list_examples_adds_numbered_lines(self):
+        import docx
+        doc = docx.Document(); doc.add_paragraph("Topics"); 
+        tp = {"map": {}, "topic_style": "List Paragraph", "topic_heading": 0}
+        m.fill_template(doc, tp, self.DATA)
+        self.assertEqual([p.text for p in doc.paragraphs][1:], ["1. First point.", "2. Second point.", "3. Third point."])
+    def test_profile_defaults_when_nothing_learned(self):
+        tp = m.template_profile()
+        self.assertTrue(tp["generic"]); self.assertEqual(tp["team"], "a team")
+    def test_hardware_tiers(self):
+        self.assertIn(m.device_profile()["tier"], ("standard", "light"))
+
+
 if __name__ == "__main__":
     unittest.main()

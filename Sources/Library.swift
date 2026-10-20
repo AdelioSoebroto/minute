@@ -5,18 +5,16 @@ import CoreText
 // MARK: - The page (a live preview of the Word document)
 
 enum PaperAssets {
-    /// Pulls the logo out of the user's Word template once so the preview looks like the real document.
-    static let logo: NSImage? = {
+    /// The logo of the current template (~/.mom/logo.png, written when a template is set up). Nil when the template has none.
+    private static var logoCache: (Date, NSImage?)?
+    static var logo: NSImage? {
         let png = home.appendingPathComponent(".mom/logo.png")
-        let docx = home.appendingPathComponent(".mom/template.docx")
-        if !FileManager.default.fileExists(atPath: png.path), FileManager.default.fileExists(atPath: docx.path) {
-            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-            p.arguments = ["-p", docx.path, "word/media/image1.png"]
-            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
-            if (try? p.run()) != nil { let d = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit(); if !d.isEmpty { try? d.write(to: png) } }
-        }
-        return NSImage(contentsOf: png)
-    }()
+        let m = (try? png.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+        if let c = logoCache, c.0 == m { return c.1 }
+        let img = NSImage(contentsOf: png)
+        logoCache = (m, img)
+        return img
+    }
     /// Calibri ships inside Word, not the system; register it for this app so the page matches the document.
     static let fontsReady: Bool = {
         let dir = "/Applications/Microsoft Word.app/Contents/Resources/DFonts/"
@@ -78,6 +76,7 @@ struct MinutesPaper: View {
     let editable: Bool
 
     private let w: CGFloat = 560
+    private var prof: TemplateProfile { TemplateProfile.current }
     private let line = Color.black
 
     private func row<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
@@ -101,22 +100,24 @@ struct MinutesPaper: View {
         VStack(alignment: .leading, spacing: 14) {
             if let logo = PaperAssets.logo {
                 Image(nsImage: logo).resizable().scaledToFit().frame(height: 44).accessibilityHidden(true)
+            } else if !prof.org.isEmpty {
+                Text(prof.org).font(PaperAssets.font(16, bold: true)).foregroundStyle(Color(red: 0.12, green: 0.23, blue: 0.37))
             }
             Text("MINUTES OF MEETING").font(PaperAssets.font(13, bold: true)).frame(maxWidth: .infinity)
             VStack(spacing: 0) {
-                row("Meeting Agenda") { InlineField(placeholder: "Meeting agenda", text: $agenda, editable: editable) }
-                row("Date") { InlineField(placeholder: "Date", text: $date, editable: editable) }
-                row("Time") { InlineField(placeholder: "Time", text: $time, editable: editable) }
-                Text("List of Participants").font(PaperAssets.font(12, bold: true)).frame(maxWidth: .infinity).padding(.vertical, 3)
+                row(prof.label("agenda", "Meeting Agenda")) { InlineField(placeholder: "Meeting agenda", text: $agenda, editable: editable) }
+                row(prof.label("date", "Date")) { InlineField(placeholder: "Date", text: $date, editable: editable) }
+                row(prof.label("time", "Time")) { InlineField(placeholder: "Time", text: $time, editable: editable) }
+                Text(prof.label("participants", "List of Participants")).font(PaperAssets.font(12, bold: true)).frame(maxWidth: .infinity).padding(.vertical, 3)
                     .overlay(Rectangle().stroke(line, lineWidth: 0.6))
-                bar("Telkomsel:")
+                bar(prof.label("internal", "Internal"))
                 HStack(spacing: 0) {
                     cell(w / 4) { LinesField(text: $telkNames, editable: editable) }
                     cell(w / 4) { InlineField(placeholder: "Unit", text: $telkUnit, editable: editable) }
                     cell(w / 4) { Color.clear }
                     cell(w / 4) { Color.clear }
                 }.fixedSize(horizontal: false, vertical: true)
-                bar("3rd party:")
+                bar(prof.label("external", "External"))
                 HStack(spacing: 0) {
                     cell(w / 2) { LinesField(text: $tpNames, editable: editable) }
                     cell(w / 4) { InlineField(placeholder: "Company", text: $tpCompany, editable: editable) }
@@ -125,7 +126,7 @@ struct MinutesPaper: View {
             }
             .frame(width: w)
 
-            Text("Topic Discussed:").font(PaperAssets.font(12, bold: true)).padding(.top, 6)
+            Text(prof.label("topics", "Topics Discussed")).font(PaperAssets.font(12, bold: true)).padding(.top, 6)
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(topics.enumerated()), id: \.element.id) { i, t in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {

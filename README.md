@@ -93,3 +93,9 @@ The pipeline sizes its work to the Mac every time it runs (`device_profile()` in
 ## Privacy
 
 Recording a meeting needs the participants' consent and may be restricted by company policy. Minute never uploads audio or text; keep the generated folders as confidential as the meetings themselves.
+
+## Templates and hardware
+
+- **Any template.** In setup (or Settings) drop in a Word template. `mom --learn-template file.docx` has the local model read it, work out which cell holds the agenda, date, time, each participant group and where the topics list goes, and stores that in `~/.mom/template.json`. Minutes are then written into the user's own file, so the layout stays theirs. If the model is unavailable, label matching finds the agenda/date/time cells.
+- **No template?** `mom --make-template [--logo image] [--org name]` builds a clean, neutral page. Drop in a logo (or give an organisation name); with neither, the page has no logo. Replace the logo any time in Settings.
+- **Hardware tier.** `mom --hardware` reads the chip and memory. 15 GB and up: Standard (`qwen3:8b`). Less: Light (`qwen3:4b`, shorter passes). Every tier runs the same passes (draft, fact-check, deadlines, tidy); only throttling or Low Power Mode shortens them. The model downloads once, on request, in setup.

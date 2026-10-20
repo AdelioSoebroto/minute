@@ -5,7 +5,7 @@ set -e
 cd "${0:A:h}"
 if [[ "$1" == test ]]; then
   python3 tests/test_pipeline.py
-  mkdir -p build && swiftc -o build/swift-tests Sources/TLine.swift tests/swift/main.swift && build/swift-tests
+  mkdir -p build && swiftc -o build/swift-tests Sources/TLine.swift Sources/Capture.swift tests/swift/gate.swift tests/swift/main.swift && build/swift-tests
   exit $?
 fi
 APP=build/Minute.app

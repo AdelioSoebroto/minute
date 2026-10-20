@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import AVFoundation
 import CoreAudio
 import UserNotifications
@@ -102,6 +103,14 @@ final class Recorder: ObservableObject {
     @Published var screenEvents: [ScreenEvent] = []
     @Published var marks: [Mark] = []
     @Published var markFlash: MarkKind?
+    @Published var micPaused = false
+    static var muteGate: Bool {
+        get { UserDefaults.standard.bool(forKey: "muteGate") }
+        set { UserDefaults.standard.set(newValue, forKey: "muteGate") }
+    }
+    private var gateBag: AnyCancellable?
+    private var gateWork: DispatchWorkItem?
+    private var gateArmed = false
     @Published var workTitle = "Transcribing the recording"
     @Published var autoDraft: Bool = UserDefaults.standard.bool(forKey: "autoDraft") { didSet { UserDefaults.standard.set(autoDraft, forKey: "autoDraft") } }
     @Published var lastDir: URL? = Recorder.latestSession()
@@ -218,6 +227,7 @@ final class Recorder: ObservableObject {
         if mode == .online { screens.begin(dir: dir) { [weak self] in self?.elapsed ?? 0 } }
         if free < DiskGuard.warnBytes { warning = "Low disk space: \(DiskGuard.text(free)) free. Long meetings may not fit." }
         watchDevices()
+        startMuteGate()
         phase = .recording
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a meeting")
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -279,11 +289,29 @@ final class Recorder: ObservableObject {
     private func rotate(mic isMic: Bool) {
         guard isRecording, let dir = session else { return }
         do {
-            if isMic { mic.stop(); micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg)) }
+            if isMic { mic.stop(); micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg)); if micPaused { mic.setGated(true) } }
             else { tap.stop(); sysSeg += 1; try tap.start(url: segURL(dir, "system", sysSeg)) }
             warning = nil; Haptic.generic()
         } catch {
             warning = "Audio device changed and recording could not follow: \(error.localizedDescription)"
+        }
+    }
+
+    /// Optional: while a meeting app has let go of the microphone (you are muted), your mic track is not kept. Only starts once the app was seen using the mic,
+    /// so a meeting app that never releases it (or an unknown one) records as usual.
+    private func startMuteGate() {
+        gateBag = nil; gateWork?.cancel(); gateArmed = false; micPaused = false
+        guard Self.muteGate, mode == .online else { return }
+        gateBag = MeetingDetector.shared.$micActive.removeDuplicates().sink { [weak self] active in
+            DispatchQueue.main.async {
+                guard let self, self.isRecording else { return }
+                self.gateWork?.cancel()
+                if active { self.gateArmed = true; self.mic.setGated(false); self.micPaused = false }
+                else if self.gateArmed {
+                    let w = DispatchWorkItem { [weak self] in self?.mic.setGated(true); self?.micPaused = true }   // short gaps while reconnecting stay recorded
+                    self.gateWork = w; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
+                }
+            }
         }
     }
 
@@ -299,6 +327,7 @@ final class Recorder: ObservableObject {
         guard isRecording, let dir = session else { return }
         timer?.invalidate(); timer = nil
         unwatchDevices()
+        gateBag = nil; gateWork?.cancel(); micPaused = false
         mic.stop(); tap.stop(); screens.end()
         Recovery.markFinished(dir)
         if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
@@ -660,6 +689,9 @@ struct PanelView: View {
             HStack(spacing: 8) {
                 SourceChip(symbol: "mic.fill", label: "Mic", level: r.micLevel)
                 if r.mode == .online { SourceChip(symbol: "speaker.wave.2.fill", label: "Meeting", level: r.sysLevel) }
+            }
+            if r.micPaused {
+                Label("Your mic is paused while you're muted in the meeting", systemImage: "mic.slash.fill").font(.caption).foregroundStyle(.secondary)
             }
             if let w = r.warning {
                 Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)

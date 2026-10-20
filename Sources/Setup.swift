@@ -401,6 +401,7 @@ struct SettingsView: View {
     @State private var readScreens = ScreenContext.enabled
     @State private var thumbs = ScreenContext.keepThumbnails
     @State private var useCalendar = CalendarContext.enabled
+    @State private var muteGate = Recorder.muteGate
     @State private var language = (Storage.configValue("mom_language") as? String) ?? "auto"
     @State private var backup = BackupJob()
     @State private var terms = (try? String(contentsOf: home.appendingPathComponent(".mom/terms.txt"), encoding: .utf8)) ?? ""
@@ -477,6 +478,8 @@ struct SettingsView: View {
             } header: { Text("Privacy") }
 
             Section {
+                Toggle("Pause my microphone while I'm muted in the meeting", isOn: $muteGate).onChange(of: muteGate) { _, v in Recorder.muteGate = v }
+                Text("For online meetings only. Works with meeting apps that let go of the microphone when you mute (most do); if yours keeps it open, Minute records as usual. Everyone else still comes through the meeting audio.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Show a floating control during online meetings", isOn: $floating).onChange(of: floating) { _, v in FloatingControl.enabled = v }
                 Text("A small pill appears when Teams, Zoom, Meet, Webex or similar is using your microphone, with hold-to-record and hold-to-stop. It is hidden from screen sharing.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Read shared screens for context", isOn: $readScreens).onChange(of: readScreens) { _, v in ScreenContext.enabled = v }

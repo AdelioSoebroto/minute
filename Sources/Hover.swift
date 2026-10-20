@@ -16,6 +16,8 @@ final class MeetingDetector: ObservableObject {
     static let shared = MeetingDetector()
     @Published private(set) var meeting: DetectedMeeting?
     @Published private(set) var lastSeen: Date?
+    /// True while a meeting app has the microphone open right now (no hold time). Meeting apps normally let go of it when you mute.
+    @Published private(set) var micActive = false
     private var timer: Timer?
     private var holdUntil = Date.distantPast        // keeps the meeting "alive" through short mic gaps (muted, reconnecting)
 
@@ -42,7 +44,9 @@ final class MeetingDetector: ObservableObject {
     }
 
     private func tick() {
-        if let m = Self.scan() {
+        let m = Self.scan()
+        if (m != nil) != micActive { micActive = m != nil }
+        if let m {
             lastSeen = Date(); holdUntil = Date().addingTimeInterval(20)
             if m != meeting { meeting = m }
         } else if meeting != nil, Date() > holdUntil { meeting = nil }
@@ -121,7 +125,7 @@ struct FloatingView: View {
             Circle().fill(.red).frame(width: 10, height: 10).opacity(pulse ? 0.35 : 1).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(clock(r.elapsed)).font(.system(size: 17, weight: .medium, design: .rounded)).monospacedDigit()
-                Text(ended ? "Meeting ended? Hold to stop" : r.warning != nil ? "Check audio" : "Recording · \(r.mode.rawValue)")
+                Text(ended ? "Meeting ended? Hold to stop" : r.warning != nil ? "Check audio" : r.micPaused ? "Recording · mic paused (muted)" : "Recording · \(r.mode.rawValue)")
                     .font(.caption2).foregroundStyle(ended || r.warning != nil ? Color.orange : .secondary)
             }
             Waveform(samples: Array(r.history.suffix(18))).frame(width: 54, height: 22)

@@ -490,9 +490,9 @@ def make_mom(transcript: str, session: Path):
     tel = [x.lower() for x in data.get("telkomsel_names", [])]
     data["third_party_names"] = [x for x in data.get("third_party_names", []) if not any(t == x.lower() or t.startswith(x.lower() + " ") for t in tel)]
     if not data["third_party_names"] and data.get("third_party_company", "").lower() == "telkomsel": data["third_party_company"] = ""
-    try:    # completeness:
+    try:    # completeness: every deadline/date said in the meeting must show up in the minutes
         import datetime
-        day0 = datetime.date(int(session.name[:4]), int(session.name[5:7]), int(session.name[8:10])) every deadline/date said in the meeting must show up in the minutes
+        day0 = datetime.date(int(session.name[:4]), int(session.name[5:7]), int(session.name[8:10]))
         missing = []
         for m_ in re.finditer(r"[^.?!\n]*\[(?:\w+ (\d{1,2}) (\w+) (\d{4}))\][^.?!\n]*", transcript):
             if "week of" in m_.group(0): continue

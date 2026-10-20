@@ -81,9 +81,9 @@ class MingguMeansWeek(unittest.TestCase):
 class Naming(unittest.TestCase):
     def test_export_stem(self):
         d = Path("/x/2026-10-20_1500_mock2")
-        self.assertEqual(m.export_stem({"agenda": "Operational – Update SSL Ondeck"}, d), "MOM_Operational_Update_SSL_Ondeck_20261020")
+        self.assertEqual(m.export_stem({"agenda": "Operational – Update SSL Ondeck"}, d), "MOM_Operational Update SSL Ondeck_20261020")
         self.assertEqual(m.export_stem({"agenda": ""}, d), "MOM_Meeting_20261020")
-        self.assertEqual(m.export_stem({"agenda": "Review: CTR / Budget?"}, d), "MOM_Review_CTR_Budget_20261020")
+        self.assertEqual(m.export_stem({"agenda": "Review: CTR / Budget?"}, d), "MOM_Review CTR Budget_20261020")
 
 class Recurring(unittest.TestCase):
     def test_recurring_weekday_gets_no_date(self):

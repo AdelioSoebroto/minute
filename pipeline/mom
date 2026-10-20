@@ -540,8 +540,8 @@ def set_lines(tc_cell, lines):
         tc.append(p)
 
 def export_stem(data, d: Path):
-    """MOM_<Document name>_<yyyymmdd>, e.g. MOM_Update_SSL_Ondeck_20261020. The date is the meeting date."""
-    name = re.sub(r"[^\w]+", "_", data.get("agenda", "") or "", flags=re.UNICODE).strip("_")[:60].strip("_") or "Meeting"
+    """MOM_<Document name>_<yyyymmdd>, e.g. "MOM_Update SSL Ondeck_20261020": spaces inside the document name, underscores only between the parts."""
+    name = re.sub(r"[\W_]+", " ", data.get("agenda", "") or "", flags=re.UNICODE).strip()[:60].strip() or "Meeting"
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", d.name)
     day = "".join(m.groups()) if m else time.strftime("%Y%m%d")
     return f"MOM_{name}_{day}"

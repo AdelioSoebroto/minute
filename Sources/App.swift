@@ -5,7 +5,8 @@ import CoreAudio
 import UserNotifications
 
 let home = FileManager.default.homeDirectoryForCurrentUser
-let momRoot = home.appendingPathComponent("Documents/MoM")
+/// Where meetings are saved (chosen in setup, changeable in Settings). See Storage in Setup.swift.
+var momRoot: URL { Storage.root }
 let momCLI = home.appendingPathComponent(".mom/bin/mom").path
 
 enum Mode: String, CaseIterable, Identifiable {
@@ -124,6 +125,23 @@ final class Recorder: ObservableObject {
     }
 
     /// Debug aid: MINUTE_DEMO=review|export|processing launches straight into that step with sample data.
+    /// Test hook: MINUTE_DEMO=movetest exercises the library mover on scratch folders (never touches real settings).
+    func moveTest() {
+        let base = URL(fileURLWithPath: "/tmp/claude-501/movetest"); let fm = FileManager.default
+        let old = base.appendingPathComponent("old"), new = base.appendingPathComponent("new")
+        for n in ["2026-10-01_0900_a", "2026-10-02_1000_b", "2026-10-03_1100_c"] {
+            try? fm.createDirectory(at: old.appendingPathComponent(n), withIntermediateDirectories: true)
+            try? "x".write(to: old.appendingPathComponent(n + "/transcript.md"), atomically: true, encoding: .utf8)
+        }
+        try? fm.createDirectory(at: new.appendingPathComponent("2026-10-02_1000_b"), withIntermediateDirectories: true)   // name clash
+        let mover = StorageMover()
+        mover.change(to: new, from: old, commit: false) { ok in
+            let l = { (u: URL) in ((try? fm.contentsOfDirectory(atPath: u.path)) ?? []).sorted().joined(separator: ",") }
+            try? "ok=\(ok) old=[\(l(old))] new=[\(l(new))] err=\(mover.error ?? "none") status=\(mover.status)\n".write(to: base.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+    }
+
     func demo(_ name: String) {
         agenda = "Operational – Update SSL Ondeck"; date = "October 20th, 2026"; time = "9:00 AM"
         telkNames = "Adelio Ferhan\nIvan Saputra"; telkUnit = "IT Digital Advertising Management"
@@ -786,8 +804,11 @@ struct MinuteApp: App {
             .onAppear {
                 AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
                 AppDelegate.isBusy = { r.isRecording || r.isBusy }
-                if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == nil { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }   // show the main window at launch
+                if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == nil {
+                    openWindow(id: Storage.setupDone ? "library" : "setup"); NSApp.activate(ignoringOtherApps: true)   // first launch: setup; afterwards: the main window
+                }
                 if ProcessInfo.processInfo.environment["MINUTE_SELFTEST"] != nil { r.selfTestSystemAudio(); return }
+                if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == "movetest" { r.moveTest(); return }
                 if let d = ProcessInfo.processInfo.environment["MINUTE_DEMO"] {
                     if d == "draft", let dir = ProcessInfo.processInfo.environment["MINUTE_DIR"] { r.draft(URL(fileURLWithPath: dir)) } else { r.demo(d) }
                     openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)
@@ -795,6 +816,12 @@ struct MinuteApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        Window("Welcome to Minute", id: "setup") { SetupView(r: r) }
+            .windowResizability(.contentSize)
+            .windowStyle(.hiddenTitleBar)
+
+        Settings { SettingsView(r: r, lib: lib) }
 
         Window("Minute", id: "library") { LibraryView(lib: lib, r: r) }
             .windowToolbarStyle(.unified)

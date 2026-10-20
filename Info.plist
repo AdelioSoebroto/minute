@@ -12,4 +12,9 @@
 <key>LSMinimumSystemVersion</key><string>14.2</string>
 <key>NSMicrophoneUsageDescription</key><string>Minute records your voice in meetings so it can write the minutes. Audio stays on this Mac.</string>
 <key>NSAudioCaptureUsageDescription</key><string>Minute records the meeting audio playing on this Mac so it can write the minutes. Audio stays on this Mac.</string>
+<key>NSDocumentsFolderUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
+<key>NSDesktopFolderUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
+<key>NSDownloadsFolderUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
+<key>NSRemovableVolumesUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
+<key>NSNetworkVolumesUsageDescription</key><string>Minute saves your meetings and minutes in the folder you choose.</string>
 </dict></plist>

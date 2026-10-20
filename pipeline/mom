@@ -12,7 +12,8 @@ from pathlib import Path
 HOME = Path.home()
 CFG = {"whisper_model": str(HOME / ".mom/models/ggml-large-v3-turbo.bin"),
        "llm": "qwen3:8b", "mom_language": "auto", "ctx": 32768,
-       "keep_audio": True, "title": "", "my_name": "Adelio Ferhan", "my_unit": "IT Digital Advertising Management"}
+       "keep_audio": True, "title": "", "my_name": "Adelio Ferhan", "my_unit": "IT Digital Advertising Management",
+       "root": str(HOME / "Documents/MoM"), "delete_audio": False}
 cfgp = HOME / ".mom/config.json"
 if cfgp.exists():
     CFG.update(json.loads(cfgp.read_text()))
@@ -79,7 +80,7 @@ def prepare(arg: Path):
                     if parts: break
             if parts: tracks.append((label, parts))
         return arg, tracks
-    d = HOME / "Documents/MoM" / (time.strftime("%Y-%m-%d_%H%M_") + re.sub(r"\W+", "-", arg.stem)[:40])
+    d = Path(CFG["root"]).expanduser() / (time.strftime("%Y-%m-%d_%H%M_") + re.sub(r"\W+", "-", arg.stem)[:40])
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy2(arg, d / arg.name)
     return d, [("Speaker", [d / arg.name])]
@@ -318,7 +319,7 @@ def template_examples():
 def past_examples(current: Path, n=2):
     """Topics from the user's own last exported minutes, so new drafts match their wording."""
     out = []
-    for d in sorted((HOME / "Documents/MoM").glob("*/"), reverse=True):
+    for d in sorted(Path(CFG["root"]).expanduser().glob("*/"), reverse=True):
         if d == current or not (d / "MoM.pdf").exists(): continue
         try: out += json.loads((d / "MoM.json").read_text()).get("topics", [])[:3]
         except Exception: pass
@@ -606,6 +607,8 @@ end tell'''
         raise SystemExit("PDF export failed (needs Microsoft Word; the Word file was saved as " + final_docx.name + "): " + err)
     shutil.move(str(pdf), str(final_pdf)); out.unlink(missing_ok=True)
     (d / "exports.json").write_text(json.dumps({"docx": final_docx.name, "pdf": final_pdf.name}))
+    if CFG.get("delete_audio"):          # optional privacy setting: keep only the transcript and minutes
+        for a in list(d.glob("mic*.caf")) + list(d.glob("system*.caf")): a.unlink(missing_ok=True)
     print("DONE", d, flush=True)
 
 # ---------- tidy: clean up spacing, wording, punctuation of an edited MoM.json ----------

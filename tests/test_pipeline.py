@@ -283,6 +283,30 @@ class ClaudeApi(unittest.TestCase):
         m.CFG["llm_provider"] = "anthropic"; m.ensure_ollama()     # returns at once, nothing is started
 
 
+class ClaudeCode(unittest.TestCase):
+    """Using the user's own signed-in Claude Code instead of an API key (stand-in executable, nothing is sent)."""
+    def fake_claude(self, out):
+        import tempfile, stat
+        d = Path(tempfile.mkdtemp()); f = d / "claude"
+        (d / "out.json").write_text(json.dumps(out))
+        f.write_text(f"#!/bin/sh\ncat > /dev/null\ncat '{d}/out.json'\n"); f.chmod(f.stat().st_mode | stat.S_IEXEC)
+        m.claude_code_path = lambda: str(f)
+    def setUp(self): self.saved = (m.claude_code_path, dict(m.CFG)); m.CFG["llm_provider"] = "claudecode"
+    def tearDown(self): m.claude_code_path = self.saved[0]; m.CFG.clear(); m.CFG.update(self.saved[1])
+    def test_text_and_structured_answers(self):
+        self.fake_claude({"is_error": False, "result": "```json\n{\"topics\": [\"a\"]}\n```"})
+        self.assertEqual(json.loads(m.chat("s", "u", {"type": "object", "properties": {"topics": {"type": "array", "items": {"type": "string"}}}})), {"topics": ["a"]})
+        self.fake_claude({"is_error": False, "result": "", "structured_output": {"topics": ["b"]}})
+        self.assertEqual(json.loads(m.chat("s", "u", {"type": "object", "properties": {"topics": {"type": "array"}}})), {"topics": ["b"]})
+    def test_signed_out_has_a_clear_message(self):
+        self.fake_claude({"is_error": True, "result": "Failed to authenticate: OAuth session expired and could not be refreshed"})
+        with self.assertRaises(m.ClaudeError) as c: m.chat("s", "u")
+        self.assertIn("claude auth login", str(c.exception))
+    def test_not_installed(self):
+        m.claude_code_path = lambda: None
+        with self.assertRaises(m.ClaudeError): m.chat("s", "u")
+
+
 class RunDecoding(unittest.TestCase):
     def test_run_survives_invalid_utf8_output(self):
         r = m.run(["/usr/bin/python3", "-c", "import sys; sys.stdout.buffer.write(b'ok \\xaf done')"])

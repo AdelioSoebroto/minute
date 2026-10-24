@@ -320,7 +320,7 @@ def doctor():
         {"id": "whisper", "title": "Speech recognition model", "detail": "Whisper large-v3-turbo, English and Bahasa Indonesia.",
          "ok": Path(CFG["whisper_model"]).exists(), "action": "whisper", "size": 0.57},
         *([{"id": "claude", "title": "Claude API", "detail": f"The minutes are written online by {CFG.get('claude_model')}. Speech recognition still runs on this Mac.",
-            "ok": bool(claude_key()), "action": None, "size": 0, "optional": False}] if use_claude() else [
+            "ok": bool(claude_code_path()) if CFG.get("llm_provider") == "claudecode" else bool(claude_key()), "action": None, "size": 0, "optional": False}] if use_claude() else [
         {"id": "ollama", "title": "Language engine", "detail": "Ollama runs the minutes-writing model on this Mac.",
          "ok": bool(ollama), "action": "tools", "size": 0.2, "needs_brew": True},
         {"id": "llm", "title": "Minutes-writing model", "detail": f"{model} ({'standard' if pr['tier'] == 'standard' else 'light'} setup for this Mac).",
@@ -624,8 +624,36 @@ def claude_key():
     return (os.environ.get("MINUTE_ANTHROPIC_KEY") or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
 
 def use_claude():
-    """The Claude API is used only when the user chose it in Settings; the key is passed in by the app (from the Keychain), never stored in config files."""
-    return CFG.get("llm_provider") == "anthropic"
+    """Claude is used only when the user chose it in Settings: either the API (key passed in by the app from the Keychain, never stored in config files)
+    or the user's own signed-in Claude Code (their Claude plan, no API key)."""
+    return CFG.get("llm_provider") in ("anthropic", "claudecode")
+
+def claude_code_path():
+    for c in (shutil.which("claude"), str(HOME / ".local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+        if c and Path(c).exists(): return c
+    return None
+
+def claude_code_chat(system, user, schema=None, timeout=900):
+    """Runs the user's own Claude Code in print mode, with no tools and none of their settings, so it only answers the prompt."""
+    exe = claude_code_path()
+    if not exe: raise ClaudeError("Claude Code is not installed on this Mac. Install it from claude.com/code, or use the Claude API key option.")
+    alias = {"claude-opus-5-5": "opus", "claude-sonnet-5-5": "sonnet", "claude-haiku-5-5": "haiku"}.get(CFG.get("claude_model"), CFG.get("claude_model") or "sonnet")
+    cmd = [exe, "-p", "--model", alias, "--output-format", "json", "--system-prompt", system, "--tools", "", "--no-session-persistence", "--setting-sources", ""]
+    if schema: cmd += ["--json-schema", json.dumps(_strict(schema))]
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "MINUTE_ANTHROPIC_KEY")}
+    try: r = subprocess.run(cmd, input=user, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+    except subprocess.TimeoutExpired: raise ClaudeError("Claude Code took too long to answer.")
+    try: j = json.loads(r.stdout)
+    except ValueError: raise ClaudeError("Claude Code did not answer: " + (r.stderr or r.stdout)[-200:])
+    if j.get("is_error"):
+        msg = str(j.get("result") or "")
+        if re.search(r"authenticat|OAuth|log ?in|expired", msg, re.I): raise ClaudeError("Claude Code is not signed in. Open Terminal and run: claude auth login")
+        raise ClaudeError("Claude Code: " + msg[:200])
+    if j.get("structured_output") is not None: return json.dumps(j["structured_output"], ensure_ascii=False)
+    out = str(j.get("result") or "").strip()
+    out = re.sub(r"^```(?:json)?\s*|\s*```$", "", out)
+    log(f"claude code: {(j.get('usage') or {}).get('output_tokens', 0)} tokens out")
+    return out
 
 def _strict(schema):
     """Structured outputs want every object closed and fully listed."""
@@ -640,6 +668,7 @@ def _strict(schema):
 class ClaudeError(Exception): pass
 
 def claude_chat(system, user, schema=None, max_tokens=16000, timeout=600):
+    if CFG.get("llm_provider") == "claudecode": return claude_code_chat(system, user, schema)
     key = claude_key()
     if not key: raise ClaudeError("No Claude API key. Add it in Minute > Settings > AI engine.")
     model = CFG.get("claude_model") or "claude-opus-5-5"

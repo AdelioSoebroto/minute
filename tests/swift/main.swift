@@ -54,6 +54,15 @@ let cl = "# Changelog\n\n## [1.2.0] - 2026-11-01\n\n### New\n- B\n\n## [1.1.0] -
 check(Changelog.section(for: "1.1.0", in: cl) == "### Fixed\n- A", "changelog: picks the right section")
 check(Changelog.section(for: "1.2.0", in: cl)?.contains("- B") == true && Changelog.section(for: "9.9.9", in: cl) == nil, "changelog: newest and missing")
 
+check(SegmentLog.drift(frames: 16000 * 100, rate: 48000, seconds: 100).map { abs($0 - 1.0 / 3) < 0.001 } == true, "drift: 16 kHz labelled 48 kHz is 0.33")
+check(SegmentLog.isBroken(0.33) && SegmentLog.isBroken(1.5) && !SegmentLog.isBroken(0.98) && !SegmentLog.isBroken(0.0) && !SegmentLog.isBroken(nil), "drift: broken only when clearly wrong")
+check(SegmentLog.drift(frames: 10, rate: 48000, seconds: 2) == nil, "drift: needs a few seconds first")
+let segDir = FileManager.default.temporaryDirectory.appendingPathComponent("seg-\(UUID().uuidString)"); try? FileManager.default.createDirectory(at: segDir, withIntermediateDirectories: true)
+let sl = SegmentLog(dir: segDir); sl.open("system.caf", at: 0); sl.close("system.caf", at: 100.5); sl.open("system_2.caf", at: 100.5); sl.closeAll(at: 200)
+if let d = try? Data(contentsOf: segDir.appendingPathComponent("segments.json")), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let f = j["files"] as? [String: [String: Double]] {
+    check(f["system.caf"]?["end"] == 100.5 && f["system_2.caf"]?["start"] == 100.5 && f["system_2.caf"]?["end"] == 200 && j["total"] as? Double == 200, "segments.json content")
+} else { check(false, "segments.json is written") }
+
 failures += gateTest()
 
 print(failures == 0 ? "swift tests passed" : "\(failures) failure(s)")

@@ -61,7 +61,7 @@ func runMom(_ args: [String], full: Bool = false, cancellable: Bool = false, sta
         p.executableURL = URL(fileURLWithPath: momCLI)
         p.arguments = args
         p.qualityOfService = .utility   // heavy work runs behind the user's apps
-        p.environment = ProcessInfo.processInfo.environment.merging(["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]) { $1 }
+        p.environment = ProcessInfo.processInfo.environment.merging(["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]) { $1 }.merging(AIEngine.environment()) { $1 }
         let out = Pipe(); p.standardOutput = out; p.standardError = out
         let tail = Tail()
         out.fileHandleForReading.readabilityHandler = { h in
@@ -109,6 +109,10 @@ final class Recorder: ObservableObject {
         get { UserDefaults.standard.bool(forKey: "muteGate") }
         set { UserDefaults.standard.set(newValue, forKey: "muteGate") }
     }
+    private var segLog: SegmentLog?
+    private var lastSysRotate = Date.distantPast
+    private var clockRestarts = 0
+    private var micRotateWork: DispatchWorkItem?
     private var gateBag: AnyCancellable?
     private var gateWork: DispatchWorkItem?
     private var gateArmed = false
@@ -222,6 +226,9 @@ final class Recorder: ObservableObject {
         }
         session = dir
         started = Date(); elapsed = 0; tick = 0; marks = []
+        clockRestarts = 0
+        segLog = SegmentLog(dir: dir); segLog?.open("mic.caf", at: 0); if mode == .online { segLog?.open("system.caf", at: 0) }
+        tap.onFormatChange = { [weak self] in self?.scheduleRotate(mic: false) }
         history = Array(repeating: 0, count: 36)
         Recovery.markStarted(dir)
         CalendarContext.writeContext(for: started, into: dir)
@@ -243,6 +250,7 @@ final class Recorder: ObservableObject {
                     if free < DiskGuard.stopBytes { self.warning = "Disk full. Recording was stopped to keep what you have."; self.stop() }
                     else if free < DiskGuard.warnBytes { self.warning = "Low disk space: \(DiskGuard.text(free)) free." }
                 }
+                if self.tick % 20 == 0, self.mode == .online { self.checkSystemClock() }      // every 2 s
                 if self.sysLevel > 0.01 { self.sysHeard = true; if self.warning?.hasPrefix("No meeting") == true { self.warning = nil } }
                 if self.mode == .online, !self.sysHeard, self.elapsed > 25, self.warning == nil {
                     self.warning = "No meeting audio heard yet. Check System Audio Recording in System Settings, or that the meeting is playing."
@@ -281,17 +289,35 @@ final class Recorder: ObservableObject {
     private func scheduleRotate(mic isMic: Bool) {
         guard isRecording else { return }
         if !isMic && mode != .online { return }
-        rotateWork?.cancel()
+        (isMic ? micRotateWork : rotateWork)?.cancel()
         let w = DispatchWorkItem { [weak self] in Task { @MainActor in self?.rotate(mic: isMic) } }
-        rotateWork = w
+        if isMic { micRotateWork = w } else { rotateWork = w }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: w)
+    }
+
+    /// The meeting audio must arrive at the speed of the wall clock. If it does not (a headset switching to call mode changes the sample rate under the tap),
+    /// start a fresh capture that reads the new format instead of recording unintelligible audio for the rest of the meeting.
+    private func checkSystemClock() {
+        guard isRecording, clockRestarts < 6, Date().timeIntervalSince(lastSysRotate) > 8 else { return }
+        let st = tap.stats()
+        if SegmentLog.isBroken(SegmentLog.drift(frames: st.frames, rate: st.rate, seconds: st.seconds)) {
+            lastSysRotate = Date(); clockRestarts += 1; Stability.note("meeting audio clock off (\(st.frames) frames in \(Int(st.seconds)) s at \(Int(st.rate)) Hz): restarting capture")
+            rotate(mic: false)
+        }
     }
 
     private func rotate(mic isMic: Bool) {
         guard isRecording, let dir = session else { return }
         do {
-            if isMic { mic.stop(); micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg)); if micPaused { mic.setGated(true) } }
-            else { tap.stop(); sysSeg += 1; try tap.start(url: segURL(dir, "system", sysSeg)) }
+            let now = elapsed
+            if isMic {
+                mic.stop(); segLog?.close(segURL(dir, "mic", micSeg).lastPathComponent, at: now)
+                micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg)); segLog?.open(segURL(dir, "mic", micSeg).lastPathComponent, at: now)
+                if micPaused { mic.setGated(true) }
+            } else {
+                tap.stop(); segLog?.close(segURL(dir, "system", sysSeg).lastPathComponent, at: now)
+                sysSeg += 1; try tap.start(url: segURL(dir, "system", sysSeg)); segLog?.open(segURL(dir, "system", sysSeg).lastPathComponent, at: now)
+            }
             warning = nil; Haptic.generic()
         } catch {
             warning = "Audio device changed and recording could not follow: \(error.localizedDescription)"
@@ -329,7 +355,8 @@ final class Recorder: ObservableObject {
         timer?.invalidate(); timer = nil
         unwatchDevices()
         gateBag = nil; gateWork?.cancel(); micPaused = false
-        mic.stop(); tap.stop(); screens.end()
+        mic.stop(); tap.stop(); screens.end(); tap.onFormatChange = nil
+        segLog?.closeAll(at: elapsed); segLog = nil
         Recovery.markFinished(dir)
         if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
         try? "\(mode.rawValue)\n".write(to: dir.appendingPathComponent("mode.txt"), atomically: true, encoding: .utf8)

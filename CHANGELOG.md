@@ -3,6 +3,16 @@
 All notable changes to Minute. The newest version is first. Each release lists what is **new**, what was **improved** and what was **fixed**; the app shows
 the current version's notes once after an update (Help > What's New). Format follows [Keep a Changelog](https://keepachangelog.com), versions follow [SemVer](https://semver.org).
 
+## [1.2.0] - 2026-10-24
+
+### New
+- **Claude API as the writing engine** (Settings > AI engine, optional). Minutes, fact-checks, name fixes, tidy-ups and "Ask" can use Claude (Opus 5.5, Sonnet 5.5 or Haiku 5.5) instead of the model on this Mac, so a small or busy Mac doesn't have to run one. The key is kept in the Keychain, "Test Connection" checks it, and if Claude can't be reached Minute falls back to the model on this Mac when there is one. Speech recognition and audio stay on this Mac.
+
+### Fixed
+- **Teams (and any call) recorded the meeting audio as unintelligible, too-fast speech.** When a Bluetooth headset switches to call mode, the audio device's sample rate drops (48 kHz to 16 kHz) under the recording; the meeting audio was saved at one third of its real length and the minutes were written from noise. Minute now watches the audio clock while recording and restarts the capture at the new rate, records which file covers which minutes (`segments.json`), and repairs recordings whose length doesn't match the meeting automatically.
+- Processing no longer stops when a tool prints a half-written character, and a model that loops can no longer run forever (output is capped).
+- Mic and meeting-audio restarts no longer cancel each other when both happen together.
+
 ## [1.1.0] - 2026-10-20
 
 ### New

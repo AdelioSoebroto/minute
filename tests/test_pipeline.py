@@ -1,5 +1,5 @@
 """Unit tests for the pure parts of the pipeline. Run: python3 tests/test_pipeline.py"""
-import importlib.machinery, importlib.util, json, tempfile, unittest
+import importlib.machinery, importlib.util, json, os, tempfile, unittest
 from pathlib import Path
 
 l = importlib.machinery.SourceFileLoader("mom", str(Path(__file__).parent.parent / "pipeline" / "mom"))
@@ -215,6 +215,108 @@ class Names(unittest.TestCase):
         self.assertNotIn("pak", " ".join(m.corrections()).lower())       # case-only change is not a correction
         self.assertIn("Teazzi", m.glossary())
         self.assertEqual(m.apply_corrections("kasih TZ lagi"), "kasih Teazzi lagi")
+
+
+class Robustness(unittest.TestCase):
+    def test_whisper_json_with_a_broken_character_is_read(self):
+        import tempfile
+        tmp = Path(tempfile.mkdtemp()); chunk = tmp / "c.wav"; chunk.write_bytes(b"x")
+        orig = m.run
+        def fake(cmd, **kw):
+            (tmp / "c.json").write_bytes(b'{"transcription": [{"text": "halo \xaf dunia"}], "result": {"language": "id"}}')
+            return type("R", (), {"returncode": 0, "stderr": ""})()
+        m.run = fake
+        try: j = m.whisper(chunk, "id")
+        finally: m.run = orig
+        self.assertIn("halo", j["transcription"][0]["text"])
+
+
+class ClaudeApi(unittest.TestCase):
+    """The optional Claude API engine, against a local stand-in for the API (no key, no network, no cost)."""
+    def serve(self, script):
+        import http.server, threading
+        seen = []
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(h):
+                n = int(h.headers.get("content-length", 0)); body = json.loads(h.rfile.read(n)); seen.append((dict(h.headers), body))
+                code, payload = script[min(len(seen) - 1, len(script) - 1)]
+                h.send_response(code); h.send_header("content-type", "application/json"); h.end_headers(); h.wfile.write(json.dumps(payload).encode())
+            def log_message(*a): pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        m.CLAUDE_URL = f"http://127.0.0.1:{srv.server_port}/v1/messages"
+        return seen
+    def setUp(self):
+        self.saved = (m.CLAUDE_URL, dict(m.CFG), os.environ.get("MINUTE_ANTHROPIC_KEY"))
+        os.environ["MINUTE_ANTHROPIC_KEY"] = "sk-test"; m.CFG.update({"llm_provider": "anthropic", "claude_model": "claude-opus-5-5"})
+        m.time.sleep = lambda s: None
+    def tearDown(self):
+        m.CLAUDE_URL = self.saved[0]; m.CFG.clear(); m.CFG.update(self.saved[1])
+        if self.saved[2] is None: os.environ.pop("MINUTE_ANTHROPIC_KEY", None)
+        else: os.environ["MINUTE_ANTHROPIC_KEY"] = self.saved[2]
+    OK = (200, {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "{\"topics\": [\"a\"]}"}], "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 3}})
+    def test_request_shape_and_text_blocks(self):
+        seen = self.serve([self.OK])
+        out = m.chat("sys", "usr", {"type": "object", "properties": {"topics": {"type": "array", "items": {"type": "string"}}}})
+        self.assertEqual(json.loads(out), {"topics": ["a"]})
+        h, b = seen[0]
+        self.assertEqual({k.lower(): v for k, v in h.items()}.get("x-api-key"), "sk-test"); self.assertEqual(b["model"], "claude-opus-5-5")
+        self.assertNotIn("temperature", b); self.assertNotIn("thinking", b)
+        self.assertEqual(b["output_config"]["format"]["schema"]["additionalProperties"], False)
+        self.assertEqual(b["output_config"]["format"]["schema"]["required"], ["topics"])
+        self.assertEqual(b["system"], "sys"); self.assertEqual(b["messages"], [{"role": "user", "content": "usr"}])
+    def test_retries_when_busy(self):
+        seen = self.serve([(529, {"error": {"message": "overloaded"}}), self.OK])
+        self.assertIn("topics", m.chat("s", "u", None)); self.assertEqual(len(seen), 2)
+    def test_bad_key_has_a_clear_message(self):
+        self.serve([(401, {"error": {"message": "invalid x-api-key"}})])
+        with self.assertRaises(m.ClaudeError) as c: m.chat("s", "u")
+        self.assertIn("key was rejected", str(c.exception))
+    def test_retries_without_fallback_option_if_rejected(self):
+        seen = self.serve([(400, {"error": {"message": "unknown field: fallbacks"}}), self.OK])
+        m.chat("s", "u"); self.assertEqual(len(seen), 2); self.assertNotIn("fallbacks", seen[1][1])
+    def test_missing_key(self):
+        os.environ.pop("MINUTE_ANTHROPIC_KEY", None); os.environ.pop("ANTHROPIC_API_KEY", None)
+        with self.assertRaises(m.ClaudeError): m.chat("s", "u")
+    def test_local_engine_is_default_and_ollama_not_needed_for_claude(self):
+        self.assertTrue(m.use_claude()); m.CFG["llm_provider"] = "ollama"; self.assertFalse(m.use_claude())
+        m.CFG["llm_provider"] = "anthropic"; m.ensure_ollama()     # returns at once, nothing is started
+
+
+class RunDecoding(unittest.TestCase):
+    def test_run_survives_invalid_utf8_output(self):
+        r = m.run(["/usr/bin/python3", "-c", "import sys; sys.stdout.buffer.write(b'ok \\xaf done')"])
+        self.assertEqual(r.returncode, 0); self.assertIn("ok", r.stdout)
+
+
+class AudioClock(unittest.TestCase):
+    """A call-mode headset made the meeting audio land at 16 kHz while labelled 48 kHz: it must be read back at its true speed."""
+    def _mislabelled(self, tmp):
+        import subprocess
+        good = tmp / "good.wav"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=12:sample_rate=16000", str(good)], check=True)
+        bad = tmp / "system.caf"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(good), "-af", "asetrate=48000", "-ar", "48000", "-c:a", "pcm_f32le", "-f", "caf", str(bad)], check=True)
+        return bad
+    def test_wrong_rate_is_detected_and_repaired(self):
+        import tempfile
+        tmp = Path(tempfile.mkdtemp()); bad = self._mislabelled(tmp)
+        self.assertLess(m.duration(bad), 6)                                       # 12 s of meeting stored as ~4 s
+        flt = m.rate_filter(bad, {"start": 0, "end": 12})
+        self.assertTrue(flt.startswith("asetrate="))
+        out = tmp / "out.wav"; m.to_wav([bad], out, {"files": {"system.caf": {"start": 0, "end": 12}}})
+        self.assertAlmostEqual(m.duration(out), 12, delta=0.6)
+    def test_healthy_file_is_untouched(self):
+        import tempfile, subprocess
+        tmp = Path(tempfile.mkdtemp()); f = tmp / "mic.caf"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=10:sample_rate=16000", "-c:a", "pcm_f32le", "-f", "caf", str(f)], check=True)
+        self.assertEqual(m.rate_filter(f, {"start": 0, "end": 10.3}), "")
+    def test_gap_between_segments_keeps_the_clock(self):
+        import tempfile, subprocess
+        tmp = Path(tempfile.mkdtemp()); a, b = tmp / "system.caf", tmp / "system_2.caf"
+        for f in (a, b): subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=5:sample_rate=16000", "-c:a", "pcm_f32le", "-f", "caf", str(f)], check=True)
+        out = tmp / "o.wav"; m.to_wav([a, b], out, {"files": {"system.caf": {"start": 0, "end": 5}, "system_2.caf": {"start": 9, "end": 14}}})
+        self.assertAlmostEqual(m.duration(out), 14, delta=0.6)
 
 
 class Release(unittest.TestCase):

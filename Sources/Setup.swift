@@ -446,6 +446,8 @@ struct SettingsView: View {
                 TemplatePicker { tplVersion += 1 }.id(tplVersion)
             } header: { Text("Template") }
 
+            AIEngineSection()
+
             Section {
                 Picker("Write the minutes in", selection: $language) {
                     Text("The language of the meeting").tag("auto"); Text("Bahasa Indonesia").tag("id"); Text("English").tag("en")

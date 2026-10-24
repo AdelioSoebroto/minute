@@ -13,12 +13,14 @@ HOME = Path.home()
 CFG = {"whisper_model": str(HOME / ".mom/models/ggml-large-v3-turbo.bin"),
        "llm": "qwen3:8b", "mom_language": "auto", "ctx": 32768,
        "keep_audio": True, "title": "", "my_name": "", "my_unit": "",
-       "root": str(HOME / "Documents/MoM"), "delete_audio": False}
+       "root": str(HOME / "Documents/MoM"), "delete_audio": False,
+       "llm_provider": "ollama", "claude_model": "claude-opus-5-5", "claude_effort": "medium"}
 cfgp = HOME / ".mom/config.json"
 LLM_PINNED = False      # True when the user chose a model themselves; otherwise it follows this Mac's hardware tier
 if cfgp.exists():
     _c = json.loads(cfgp.read_text()); LLM_PINNED = "llm" in _c
     CFG.update(_c)
+if os.environ.get("MINUTE_LLM_PROVIDER"): CFG["llm_provider"] = os.environ["MINUTE_LLM_PROVIDER"]     # tests and one-off runs
 # Everything runs on this Mac and never needs the internet. Talk to Ollama directly even if a VPN or proxy is configured.
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + os.environ.get("PATH", "")
@@ -50,6 +52,7 @@ def profile():
     global PROFILE
     if PROFILE is None:
         PROFILE = device_profile()
+        if use_claude(): PROFILE.update({"ctx_cap": 120000, "verify": True, "mode": "full", "beam": 5})     # the cloud model reads a whole meeting at once
         log("profile " + json.dumps(PROFILE))
         try: os.nice(PROFILE["nice"])     # stay behind the user's apps so the Mac stays responsive
         except Exception: pass
@@ -67,7 +70,7 @@ def log(msg):
     if LOGF:
         with open(LOGF, "a") as f: f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
 def stage(s): log("STAGE " + s); print(f"STAGE: {s}", flush=True)
-def run(cmd, **kw): return subprocess.run(cmd, capture_output=True, text=True, **kw)
+def run(cmd, **kw): return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)   # tools can print half a character
 
 def prepare(arg: Path):
     """Returns (session_dir, [(label, audio_path)])"""
@@ -89,13 +92,41 @@ def prepare(arg: Path):
     shutil.copy2(arg, d / arg.name)
     return d, [("Speaker", [d / arg.name])]
 
-def to_wav(srcs, dst: Path):
-    wavs = []
+def audio_rate(p: Path):
+    r = run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(p)])
+    try: return int(r.stdout.strip())
+    except ValueError: return 0
+
+def rate_filter(src: Path, seg):
+    """If a recording's own length does not match the wall-clock time it was recorded for, its samples were stored at the wrong sample rate
+    (a Bluetooth headset switching to call mode does this: 16 kHz audio labelled 48 kHz plays 3x too fast). Return an ffmpeg filter that reads
+    the samples at the true rate, or '' when the file is fine or nothing is known."""
+    try:
+        wall = float(seg["end"]) - float(seg["start"])
+        have = duration(src); sr = audio_rate(src)
+    except Exception: return ""
+    if wall < 5 or have <= 0 or sr <= 0: return ""
+    ratio = have / wall
+    if abs(ratio - 1) <= 0.12: return ""
+    true_rate = max(4000, min(192000, round(sr * ratio)))
+    log(f"{src.name}: {have:.0f}s of audio for {wall:.0f}s of meeting, reading at {true_rate} Hz instead of {sr} Hz")
+    return f"asetrate={true_rate},"
+
+def to_wav(srcs, dst: Path, info=None):
+    """Convert recorded segments to one 16 kHz mono wav on the meeting clock: wrong-rate segments are corrected and gaps between segments are silence."""
+    info = (info or {}).get("files", {})
+    wavs, cursor = [], 0.0
     for i, src in enumerate(srcs):
+        seg = info.get(src.name)
         w = dst.with_name(f"{dst.stem}_seg{i}.wav")
-        r = run(["ffmpeg", "-y", "-i", str(src), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(w)])
+        af = (rate_filter(src, seg) if seg and seg.get("end") is not None else "") + "aresample=16000"
+        r = run(["ffmpeg", "-y", "-i", str(src), "-af", af, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(w)])
         if r.returncode: raise SystemExit(f"ffmpeg failed on {src.name}: {r.stderr[-300:]}")
-        wavs.append(w)
+        if seg and float(seg.get("start", 0)) - cursor > 0.5:       # the device was away for a while: keep the clock right
+            gap = dst.with_name(f"{dst.stem}_gap{i}.wav")
+            run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", f"{float(seg['start']) - cursor:.2f}", "-c:a", "pcm_s16le", str(gap)])
+            if gap.exists(): wavs.append(gap)
+        wavs.append(w); cursor = max(cursor, float(seg["start"]) if seg else cursor) + duration(w)
     if len(wavs) == 1: wavs[0].rename(dst); return
     lst = dst.with_suffix(".txt"); lst.write_text("".join(f"file '{w}'\n" for w in wavs))
     r = run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(dst)])
@@ -204,7 +235,7 @@ def fix_terms(transcript, extra=None):
         "You fix misheard proper nouns in a speech-to-text transcript that mixes English and Bahasa Indonesia (formal and slang). You get a list of KNOWN NAMES: brands, restaurants, shops, apps, banks, places, institutions and work terms common in Indonesia. "
         "Return the replacements needed where a word or short phrase in the transcript is clearly a misheard or misspelled version of a known name, judged by how it sounds and by the context (for example 'TZ' or 'tizi' said about a tea drink means 'Teazzi'; 'indo maret' means 'Indomaret'; 'tokped' is slang, leave it). "
         "'heard' must appear in the transcript exactly as written. 'correct' must be copied exactly from the list. Do not touch ordinary words, people's names, or anything you are not sure about. Return an empty list if nothing needs fixing.",
-        "KNOWN NAMES: " + "; ".join(lex)[:4500] + ("\nALSO SEEN ON SCREEN DURING THE MEETING (treat as known names too): " + "; ".join(extra) if extra else "") + "\n\nTRANSCRIPT:\n" + transcript, TERMS_SCHEMA))
+        "KNOWN NAMES: " + "; ".join(lex)[:4500] + ("\nALSO SEEN ON SCREEN DURING THE MEETING (treat as known names too): " + "; ".join(extra) if extra else "") + "\n\nTRANSCRIPT:\n" + transcript, TERMS_SCHEMA, max_out=1200))
     canon = {x.lower(): x for x in lex + list(extra or [])}
     pairs = {}
     for r in out.get("replacements", [])[:12]:
@@ -288,10 +319,12 @@ def doctor():
          "ok": bool(shutil.which("whisper-cli") and shutil.which("ffmpeg")), "action": "tools", "size": 0.1, "needs_brew": True},
         {"id": "whisper", "title": "Speech recognition model", "detail": "Whisper large-v3-turbo, English and Bahasa Indonesia.",
          "ok": Path(CFG["whisper_model"]).exists(), "action": "whisper", "size": 0.57},
+        *([{"id": "claude", "title": "Claude API", "detail": f"The minutes are written online by {CFG.get('claude_model')}. Speech recognition still runs on this Mac.",
+            "ok": bool(claude_key()), "action": None, "size": 0, "optional": False}] if use_claude() else [
         {"id": "ollama", "title": "Language engine", "detail": "Ollama runs the minutes-writing model on this Mac.",
          "ok": bool(ollama), "action": "tools", "size": 0.2, "needs_brew": True},
         {"id": "llm", "title": "Minutes-writing model", "detail": f"{model} ({'standard' if pr['tier'] == 'standard' else 'light'} setup for this Mac).",
-         "ok": model in models, "action": "llm", "size": llm_gb, "blocked_by": None if ollama else "ollama"},
+         "ok": model in models, "action": "llm", "size": llm_gb, "blocked_by": None if ollama else "ollama"}]),
         {"id": "docx", "title": "Word file support", "detail": "Fills your template.", "ok": have_docx(), "action": "docx", "size": 0.01},
         {"id": "word", "title": "Microsoft Word (for PDF)", "detail": "PDFs are made with Word. Without it you still get the Word file.",
          "ok": Path("/Applications/Microsoft Word.app").exists(), "action": None, "optional": True, "size": 0},
@@ -448,7 +481,7 @@ def whisper(chunk: Path, lang: str):
            "-bs", str(profile()["beam"]), "-bo", str(profile()["beam"]), "-t", str(profile()["threads"])]
     r = run(cmd)
     if r.returncode: raise SystemExit("whisper failed: " + r.stderr[-300:])
-    return json.loads(Path(str(out) + ".json").read_text())
+    return json.loads(Path(str(out) + ".json").read_bytes().decode("utf-8", errors="replace"))   # whisper can cut a multi-byte character in half
 
 def transcribe(label, wav, tmp, total_done, n_total):
     total = duration(wav)
@@ -583,6 +616,74 @@ def suppress_bleed(mic: Path, system: Path, out: Path):
 
 def ts(sec): return f"{int(sec // 3600):02d}:{int(sec % 3600 // 60):02d}:{int(sec % 60):02d}"
 
+# ---------- the writing engine: this Mac (Ollama) or, optionally, the Claude API ----------
+CLAUDE_URL = os.environ.get("MINUTE_CLAUDE_BASE", "https://api.anthropic.com") + "/v1/messages"
+CLAUDE_VERSION = "2026-10-21"
+
+def claude_key():
+    return (os.environ.get("MINUTE_ANTHROPIC_KEY") or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+
+def use_claude():
+    """The Claude API is used only when the user chose it in Settings; the key is passed in by the app (from the Keychain), never stored in config files."""
+    return CFG.get("llm_provider") == "anthropic"
+
+def _strict(schema):
+    """Structured outputs want every object closed and fully listed."""
+    if isinstance(schema, dict):
+        out = {k: _strict(v) for k, v in schema.items()}
+        if out.get("type") == "object" and "properties" in out:
+            out["additionalProperties"] = False; out["required"] = list(out["properties"].keys())
+        return out
+    if isinstance(schema, list): return [_strict(x) for x in schema]
+    return schema
+
+class ClaudeError(Exception): pass
+
+def claude_chat(system, user, schema=None, max_tokens=16000, timeout=600):
+    key = claude_key()
+    if not key: raise ClaudeError("No Claude API key. Add it in Minute > Settings > AI engine.")
+    model = CFG.get("claude_model") or "claude-opus-5-5"
+    body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]}
+    out_cfg = {"effort": CFG.get("claude_effort", "medium")}
+    if schema: out_cfg["format"] = {"type": "json_schema", "schema": _strict(schema)}
+    body["output_config"] = out_cfg
+    headers = {"content-type": "application/json", "x-api-key": key, "anthropic-version": CLAUDE_VERSION}
+    fallbacks = model in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5", "claude-fable-5-1")
+    last = None
+    for attempt in range(5):
+        b = dict(body); h = dict(headers)
+        if fallbacks:       # a safety-classifier decline is re-run on the fallback model instead of failing the meeting
+            b["fallbacks"] = "default"; h["anthropic-beta"] = "server-side-fallback-2026-07-01"
+        req = urllib.request.Request(CLAUDE_URL, json.dumps(b).encode(), h)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                j = json.load(r)
+        except urllib.error.HTTPError as e:
+            msg = ""
+            try: msg = json.load(e).get("error", {}).get("message", "")
+            except Exception: pass
+            if e.code == 401: raise ClaudeError("The Claude API key was rejected. Check it in Settings > AI engine.")
+            if e.code == 403: raise ClaudeError("This Claude API key is not allowed to use " + model + ". " + msg)
+            if e.code == 404: raise ClaudeError("The model " + model + " was not found for this key. " + msg)
+            if e.code == 400 and fallbacks and re.search(r"fallback|beta", msg, re.I):
+                fallbacks = False; log("claude: fallback option not accepted, retrying without it: " + msg[:120]); continue
+            if e.code in (408, 409, 429, 500, 502, 503, 504, 529):
+                wait = min(60, int(e.headers.get("retry-after") or 0) or 3 * 2 ** attempt)
+                log(f"claude: HTTP {e.code}, retrying in {wait}s"); last = ClaudeError(f"Claude API busy (HTTP {e.code}). {msg}"); time.sleep(wait); continue
+            raise ClaudeError(f"Claude API error {e.code}: {msg}")
+        if j.get("stop_reason") == "refusal": raise ClaudeError("Claude declined to process this meeting (safety filter).")
+        txt = "".join(c.get("text", "") for c in j.get("content", []) if c.get("type") == "text").strip()
+        u = j.get("usage") or {}
+        log(f"claude {model}: {u.get('input_tokens', 0)} in, {u.get('output_tokens', 0)} out, stop {j.get('stop_reason')}")
+        if j.get("stop_reason") == "max_tokens" and schema: raise ClaudeError("The answer was cut off (too long). Try again or use the on-device model.")
+        return txt
+    raise last or ClaudeError("Claude API did not answer.")
+
+def claude_test():
+    """For Settings > Test connection."""
+    out = claude_chat("Reply with exactly: ok", "ping", None, max_tokens=64, timeout=60)
+    return bool(out)
+
 def ollama_up():
     try: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=2); return True
     except Exception: return False
@@ -603,6 +704,7 @@ def pick_model():
     else: raise SystemExit(f"No language model installed. Run: ollama pull {CFG['llm']}")
 
 def ensure_ollama():
+    if use_claude(): return
     if ollama_up(): pick_model(); return
     subprocess.Popen(["ollama", "serve"], env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434", "NO_PROXY": "*", "OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1", "OLLAMA_MAX_LOADED_MODELS": "1"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(30):
@@ -635,13 +737,19 @@ SCHEMA = {"type": "object", "required": ["agenda", "telkomsel_names", "telkomsel
                          "telkomsel_unit": {"type": "string"}, "third_party_names": {"type": "array", "items": {"type": "string"}},
                          "third_party_company": {"type": "string"}, "topics": {"type": "array", "items": {"type": "string"}}}}
 
-def chat(system, user, schema=None):
+def chat(system, user, schema=None, max_out=6000):
+    if use_claude():
+        try: return claude_chat(system, user, schema)
+        except ClaudeError: raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:      # offline: carry on with the model on this Mac if there is one
+            if not (shutil.which("ollama") or ollama_up()): raise ClaudeError("Could not reach the Claude API and this Mac has no local model. " + str(e))
+            log("claude unreachable (" + str(e)[:80] + "), using the model on this Mac"); CFG["llm_provider"] = "ollama"; ensure_ollama()
     pr = profile()
     need = int((len(system) + len(user)) / 2.8) + 1800            # rough tokens in + room for the answer
     ctx = min(pr["ctx_cap"], max(4096, -(-need // 2048) * 2048))  # only as much context as needed: it is what costs RAM
     cooldown()
     payload = {"model": CFG["llm"], "stream": False, "think": False, "keep_alive": "20s",
-               "options": {"num_ctx": ctx, "temperature": 0.1, "seed": 7},
+               "options": {"num_ctx": ctx, "temperature": 0.1, "seed": 7, "num_predict": max_out, "repeat_penalty": 1.05},   # num_predict: a model that loops must not run forever
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     if schema: payload["format"] = schema
     req = urllib.request.Request("http://127.0.0.1:11434/api/chat", json.dumps(payload).encode(), {"Content-Type": "application/json"})
@@ -1319,6 +1427,10 @@ def main():
     if not args: raise SystemExit(__doc__)
     if args[0] == "--tidy":
         return tidy(Path(args[1]).expanduser().resolve())
+    if args[0] == "--claude-test":
+        try: claude_test(); print("DONE ok", CFG.get("claude_model"), flush=True); return
+        except ClaudeError as e: raise SystemExit(str(e))
+        except Exception as e: raise SystemExit("Could not reach the Claude API: " + str(e)[:160])
     if args[0] == "--export":
         return export(Path(args[1]).expanduser().resolve())
     if args[0] == "--hardware":
@@ -1395,7 +1507,7 @@ def main():
         wavs = {}
         for label, src in tracks:
             stage(f"Preparing {label} audio")
-            wav = tmp / f"{label}.wav"; to_wav(src, wav); wavs[label] = wav
+            wav = tmp / f"{label}.wav"; to_wav(src, wav, load_json(d / "segments.json", {})); wavs[label] = wav
         if "Me" in wavs and "Others" in wavs:
             stage("Removing speaker bleed from the mic")
             clean = tmp / "Me_clean.wav"
@@ -1429,6 +1541,7 @@ def main():
 
 def unload():
     """Free the model's RAM as soon as we are done instead of keeping ~10 GB resident."""
+    if use_claude(): return
     try:
         req = urllib.request.Request("http://127.0.0.1:11434/api/generate", json.dumps({"model": CFG["llm"], "keep_alive": 0}).encode(), {"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10).read()
@@ -1443,5 +1556,5 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
         log(traceback.format_exc())
-        print(f"{type(e).__name__}: {e}", flush=True)
+        print(str(e) if isinstance(e, ClaudeError) else f"{type(e).__name__}: {e}", flush=True)
         sys.exit(1)

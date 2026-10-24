@@ -31,6 +31,20 @@ final class SystemTap {
     private var procID: AudioDeviceIOProcID?
     private var file: AVAudioFile?
     private let queue = DispatchQueue(label: "mom.systemtap")
+    private let statLock = NSLock()
+    private var frames: Int64 = 0
+    private var begun = Date()
+    private(set) var rate: Double = 0
+    /// Called (on the main queue) when macOS changes the meeting audio's sample rate, e.g. a headset switching to call mode.
+    var onFormatChange: (() -> Void)?
+    private var fmtAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    private var fmtListener: AudioObjectPropertyListenerBlock?
+
+    /// (frames received, seconds since this file started, the sample rate it is labelled with)
+    func stats() -> (frames: Int64, seconds: Double, rate: Double) {
+        statLock.lock(); defer { statLock.unlock() }
+        return (frames, Date().timeIntervalSince(begun), rate)
+    }
 
     func start(url: URL) throws {
         let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
@@ -69,9 +83,14 @@ final class SystemTap {
         }
         file = try AVAudioFile(forWriting: url, settings: format.settings,
                                commonFormat: format.commonFormat, interleaved: format.isInterleaved)
+        statLock.lock(); frames = 0; begun = Date(); rate = format.sampleRate; statLock.unlock()
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.onFormatChange?() }
+        fmtListener = listener
+        AudioObjectAddPropertyListenerBlock(aggID, &fmtAddr, DispatchQueue.main, listener)
         st = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, queue) { [weak self] _, inData, _, _, _ in
             guard let self, let buf = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: inData, deallocator: nil) else { return }
             self.level.update(peak(buf))
+            self.statLock.lock(); self.frames += Int64(buf.frameLength); self.statLock.unlock()
             try? self.file?.write(from: buf)
         }
         guard st == noErr else { stop(); throw CaptureError(message: "Could not start capture (\(st)).") }
@@ -81,6 +100,7 @@ final class SystemTap {
 
     func stop() {
         if aggID != kAudioObjectUnknown {
+            if let l = fmtListener { AudioObjectRemovePropertyListenerBlock(aggID, &fmtAddr, DispatchQueue.main, l); fmtListener = nil }
             if let p = procID { AudioDeviceStop(aggID, p); AudioDeviceDestroyIOProcID(aggID, p); procID = nil }
             AudioHardwareDestroyAggregateDevice(aggID); aggID = AudioObjectID(kAudioObjectUnknown)
         }

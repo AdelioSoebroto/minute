@@ -27,6 +27,10 @@ Welcome → **Get Minute ready** (`mom --doctor` lists what's missing and instal
 
 macOS remembers a permission by the app's signature, and an ad-hoc signature changes on every build. Run `./setup-signing.sh` once before building so permissions survive updates.
 
+## AI engine
+
+By default the minutes are written by a model on this Mac. **Settings > AI engine** can switch to the **Claude API**: paste an API key (stored in the Keychain, never in a file), pick Opus 5.5, Sonnet 5.5 or Haiku 5.5, and press Test Connection. Only the transcript, text read from shared screens and calendar invitee names are sent to Anthropic; audio and speech recognition stay on this Mac. If Claude can't be reached, Minute uses the local model when one is installed. `python3 tests/claude_flow.py` runs the whole flow against a local stand-in API.
+
 ## Adapts to the Mac
 
 `mom --hardware` picks the model by memory: 15 GB and up runs `qwen3:8b` (Standard), less runs `qwen3:4b` (Light). Every tier runs the same passes (draft, fact-check, deadlines, tidy). Every run also adapts to power: on battery or Low Power Mode it works more gently, it pauses while macOS throttles, runs at low priority, gives the model only the context it needs, and unloads it afterwards.

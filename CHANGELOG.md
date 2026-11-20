@@ -10,6 +10,7 @@ the current version's notes once after an update (Help > What's New). Format fol
 - **"My Claude login" option**: use the Claude Code already signed in on your Mac (your own Claude plan) instead of an API key, so there is no separate bill; meetings count against the plan's usage limits.
 
 ### Fixed
+- Choosing "Claude API key" without saving a key no longer fails the minutes: Minute uses your Claude login (Claude Code), or the model on this Mac, instead. Any Claude failure mid-run (signed out, no key, offline) now falls back to the model on this Mac when it is installed.
 - **Teams (and any call) recorded the meeting audio as unintelligible, too-fast speech.** When a Bluetooth headset switches to call mode, the audio device's sample rate drops (48 kHz to 16 kHz) under the recording; the meeting audio was saved at one third of its real length and the minutes were written from noise. Minute now watches the audio clock while recording and restarts the capture at the new rate, records which file covers which minutes (`segments.json`), and repairs recordings whose length doesn't match the meeting automatically.
 - Processing no longer stops when a tool prints a half-written character, and a model that loops can no longer run forever (output is capped).
 - Mic and meeting-audio restarts no longer cancel each other when both happen together.

@@ -79,6 +79,10 @@ struct AIEngineSection: View {
                 Text("Uses the Claude Code installed on this Mac with your own Claude plan, so there is no API key and no separate bill; meetings count against your plan's usage limits. If the test says it is not signed in, open Terminal once and run: claude auth login. The transcript, text read from shared screens and calendar invitee names are sent to Anthropic; audio and speech recognition stay on this Mac. If Claude can't be reached, Minute uses the model on this Mac when it has one.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if provider == "anthropic" {
+                if !saved {
+                    Label("No key saved yet. Until you add one, Minute uses your Claude login (Claude Code) or the model on this Mac.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
                 if saved {
                     LabeledContent("API key") {
                         HStack { Label("Saved in the Keychain", systemImage: "checkmark.seal.fill").foregroundStyle(.green)

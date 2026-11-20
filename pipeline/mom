@@ -628,6 +628,19 @@ def use_claude():
     or the user's own signed-in Claude Code (their Claude plan, no API key)."""
     return CFG.get("llm_provider") in ("anthropic", "claudecode")
 
+def resolve_provider():
+    """Never fail a meeting over the engine setting: an API-key choice with no key uses the signed-in Claude Code if there is one,
+    and failing that the model on this Mac."""
+    if CFG.get("llm_provider") == "anthropic" and not claude_key():
+        if claude_code_path(): CFG["llm_provider"] = "claudecode"; log("no Claude API key: using the signed-in Claude Code instead")
+        elif shutil.which("ollama"): CFG["llm_provider"] = "ollama"; log("no Claude API key: using the model on this Mac")
+
+def local_fallback(why):
+    """Claude could not be used for this run: carry on with the model on this Mac if it is installed."""
+    if not shutil.which("ollama"): return False
+    log(f"{why}: using the model on this Mac for the rest of this run"); stage("Claude unavailable, using the model on this Mac")
+    CFG["llm_provider"] = "ollama"; global PROFILE; PROFILE = None; ensure_ollama(); return True
+
 def claude_code_path():
     for c in (shutil.which("claude"), str(HOME / ".local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
         if c and Path(c).exists(): return c
@@ -769,10 +782,10 @@ SCHEMA = {"type": "object", "required": ["agenda", "telkomsel_names", "telkomsel
 def chat(system, user, schema=None, max_out=6000):
     if use_claude():
         try: return claude_chat(system, user, schema)
-        except ClaudeError: raise
+        except ClaudeError as e:      # no key, signed out, refused: the meeting still gets minutes when this Mac has a model
+            if "declined" in str(e) or not local_fallback(str(e)[:100]): raise
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:      # offline: carry on with the model on this Mac if there is one
-            if not (shutil.which("ollama") or ollama_up()): raise ClaudeError("Could not reach the Claude API and this Mac has no local model. " + str(e))
-            log("claude unreachable (" + str(e)[:80] + "), using the model on this Mac"); CFG["llm_provider"] = "ollama"; ensure_ollama()
+            if not local_fallback("Claude unreachable (" + str(e)[:80] + ")"): raise ClaudeError("Could not reach Claude and this Mac has no local model. " + str(e))
     pr = profile()
     need = int((len(system) + len(user)) / 2.8) + 1800            # rough tokens in + room for the answer
     ctx = min(pr["ctx_cap"], max(4096, -(-need // 2048) * 2048))  # only as much context as needed: it is what costs RAM
@@ -1443,6 +1456,7 @@ def main():
     try: os.setpgrp()
     except Exception: pass
     signal.signal(signal.SIGTERM, _on_term)
+    resolve_provider()
     if len(args) >= 2 and not args[0].startswith("--"):
         pass
     for a in args:

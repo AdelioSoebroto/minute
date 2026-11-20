@@ -250,7 +250,9 @@ class ClaudeApi(unittest.TestCase):
         self.saved = (m.CLAUDE_URL, dict(m.CFG), os.environ.get("MINUTE_ANTHROPIC_KEY"))
         os.environ["MINUTE_ANTHROPIC_KEY"] = "sk-test"; m.CFG.update({"llm_provider": "anthropic", "claude_model": "claude-opus-5-5"})
         m.time.sleep = lambda s: None
+        self.lf = m.local_fallback; m.local_fallback = lambda why: False
     def tearDown(self):
+        m.local_fallback = self.lf
         m.CLAUDE_URL = self.saved[0]; m.CFG.clear(); m.CFG.update(self.saved[1])
         if self.saved[2] is None: os.environ.pop("MINUTE_ANTHROPIC_KEY", None)
         else: os.environ["MINUTE_ANTHROPIC_KEY"] = self.saved[2]
@@ -291,8 +293,22 @@ class ClaudeCode(unittest.TestCase):
         (d / "out.json").write_text(json.dumps(out))
         f.write_text(f"#!/bin/sh\ncat > /dev/null\ncat '{d}/out.json'\n"); f.chmod(f.stat().st_mode | stat.S_IEXEC)
         m.claude_code_path = lambda: str(f)
-    def setUp(self): self.saved = (m.claude_code_path, dict(m.CFG)); m.CFG["llm_provider"] = "claudecode"
-    def tearDown(self): m.claude_code_path = self.saved[0]; m.CFG.clear(); m.CFG.update(self.saved[1])
+    def setUp(self): self.saved = (m.claude_code_path, dict(m.CFG), m.local_fallback); m.CFG["llm_provider"] = "claudecode"; m.local_fallback = lambda why: False
+    def tearDown(self): m.claude_code_path = self.saved[0]; m.CFG.clear(); m.CFG.update(self.saved[1]); m.local_fallback = self.saved[2]
+    def test_falls_back_to_this_mac_when_claude_fails(self):
+        self.fake_claude({"is_error": True, "result": "Failed to authenticate"})
+        used = []
+        def fb(why): used.append(why); m.CFG["llm_provider"] = "ollama"; return True
+        m.local_fallback = fb
+        orig = m.urllib.request.urlopen
+        class R:
+            def __enter__(s): return s
+            def __exit__(s, *a): pass
+            def read(s): return json.dumps({"message": {"content": "{\"topics\": [\"local\"]}"}}).encode()
+        m.urllib.request.urlopen = lambda *a, **k: R(); m.cooldown = lambda: None
+        try: out = m.chat("s", "u")
+        finally: m.urllib.request.urlopen = orig
+        self.assertEqual(len(used), 1); self.assertIn("local", out)
     def test_text_and_structured_answers(self):
         self.fake_claude({"is_error": False, "result": "```json\n{\"topics\": [\"a\"]}\n```"})
         self.assertEqual(json.loads(m.chat("s", "u", {"type": "object", "properties": {"topics": {"type": "array", "items": {"type": "string"}}}})), {"topics": ["a"]})
@@ -305,6 +321,20 @@ class ClaudeCode(unittest.TestCase):
     def test_not_installed(self):
         m.claude_code_path = lambda: None
         with self.assertRaises(m.ClaudeError): m.chat("s", "u")
+
+
+class EngineFallback(unittest.TestCase):
+    def setUp(self): self.saved = (dict(m.CFG), m.claude_code_path, os.environ.get("MINUTE_ANTHROPIC_KEY"), os.environ.get("ANTHROPIC_API_KEY")); os.environ.pop("MINUTE_ANTHROPIC_KEY", None); os.environ.pop("ANTHROPIC_API_KEY", None)
+    def tearDown(self):
+        m.CFG.clear(); m.CFG.update(self.saved[0]); m.claude_code_path = self.saved[1]
+        for k, v in (("MINUTE_ANTHROPIC_KEY", self.saved[2]), ("ANTHROPIC_API_KEY", self.saved[3])):
+            if v is not None: os.environ[k] = v
+    def test_api_choice_without_key_uses_claude_code(self):
+        m.CFG["llm_provider"] = "anthropic"; m.claude_code_path = lambda: "/usr/local/bin/claude"
+        m.resolve_provider(); self.assertEqual(m.CFG["llm_provider"], "claudecode")
+    def test_api_choice_with_key_is_kept(self):
+        os.environ["MINUTE_ANTHROPIC_KEY"] = "sk-x"; m.CFG["llm_provider"] = "anthropic"
+        m.resolve_provider(); self.assertEqual(m.CFG["llm_provider"], "anthropic")
 
 
 class RunDecoding(unittest.TestCase):

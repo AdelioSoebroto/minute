@@ -83,15 +83,31 @@ func runMom(_ args: [String], full: Bool = false, cancellable: Bool = false, sta
 }
 
 @MainActor
+final class LiveMeter: ObservableObject {
+    @Published var elapsed: TimeInterval = 0
+    @Published var micLevel: Float = 0
+    @Published var sysLevel: Float = 0
+    @Published var history: [Float] = Array(repeating: 0, count: 36)
+}
+
+/// The running clock in the menu bar: redraws on its own, not the whole app.
+struct MenuClock: View {
+    @ObservedObject var live: LiveMeter
+    var body: some View { Text(clock(live.elapsed)).monospacedDigit() }
+}
+
+@MainActor
 final class Recorder: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var mode: Mode = Mode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .online {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: "mode") }
     }
-    @Published var elapsed: TimeInterval = 0
-    @Published var micLevel: Float = 0
-    @Published var sysLevel: Float = 0
-    @Published var history: [Float] = Array(repeating: 0, count: 36)
+    /// Clock and meters tick 10 times a second; they live in their own object so only the views that show them redraw.
+    let live = LiveMeter()
+    var elapsed: TimeInterval { get { live.elapsed } set { live.elapsed = newValue } }
+    var micLevel: Float { get { live.micLevel } set { live.micLevel = newValue } }
+    var sysLevel: Float { get { live.sysLevel } set { live.sysLevel = newValue } }
+    var history: [Float] { get { live.history } set { live.history = newValue } }
     @Published var warning: String?
     private var micSeg = 1, sysSeg = 1
     private var sysHeard = false
@@ -241,9 +257,10 @@ final class Recorder: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.elapsed = Date().timeIntervalSince(self.started)
-                self.micLevel = self.mic.level.read(); self.sysLevel = self.tap.level.read()
-                self.history.removeFirst(); self.history.append(max(self.micLevel, self.sysLevel))
+                let m = self.mic.level.read(), sy = self.tap.level.read()
+                var h = self.live.history; h.removeFirst(); h.append(max(m, sy))
+                self.live.elapsed = Date().timeIntervalSince(self.started)
+                self.live.micLevel = m; self.live.sysLevel = sy; self.live.history = h
                 self.tick += 1
                 if self.tick % 300 == 0, let dir = self.session {          // every 30 s: never let a full disk ruin a meeting
                     let free = DiskGuard.freeBytes(at: dir)
@@ -667,6 +684,7 @@ struct SourceChip: View {
 
 struct PanelView: View {
     @ObservedObject var r: Recorder
+    @ObservedObject var live: LiveMeter
     @Environment(\.openWindow) private var openWindow
 
     func showWindow() { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
@@ -708,15 +726,15 @@ struct PanelView: View {
         VStack(spacing: 14) {
             HStack(spacing: 6) {
                 Circle().fill(.red).frame(width: 7, height: 7)
-                    .opacity(Int(r.elapsed * 1.5) % 2 == 0 ? 1 : 0.35).animation(.easeInOut(duration: 0.4), value: Int(r.elapsed * 1.5))
+                    .opacity(Int(live.elapsed * 1.5) % 2 == 0 ? 1 : 0.35).animation(.easeInOut(duration: 0.4), value: Int(live.elapsed * 1.5))
                 Text("Recording").font(.callout.weight(.semibold))
             }
-            Text(clock(r.elapsed)).font(.system(size: 44, weight: .light, design: .rounded)).monospacedDigit()
+            Text(clock(live.elapsed)).font(.system(size: 44, weight: .light, design: .rounded)).monospacedDigit()
                 .contentTransition(.numericText())
-            Waveform(samples: r.history)
+            Waveform(samples: live.history)
             HStack(spacing: 8) {
-                SourceChip(symbol: "mic.fill", label: "Mic", level: r.micLevel)
-                if r.mode == .online { SourceChip(symbol: "speaker.wave.2.fill", label: "Meeting", level: r.sysLevel) }
+                SourceChip(symbol: "mic.fill", label: "Mic", level: live.micLevel)
+                if r.mode == .online { SourceChip(symbol: "speaker.wave.2.fill", label: "Meeting", level: live.sysLevel) }
             }
             if r.mode == .online && MicRecorder.voiceProcessing {
                 Button { AVCaptureDevice.showSystemUserInterface(.microphoneModes) } label: {
@@ -1001,12 +1019,12 @@ struct MinuteApp: App {
     var body: some Scene {
         // Pinned: the icon always stays in the menu bar. Dragging it out (or hiding it) is ignored, and it is re-inserted.
         MenuBarExtra(isInserted: Binding(get: { true }, set: { _ in })) {
-            PanelView(r: r)
+            PanelView(r: r, live: r.live)
         } label: {
             Group {
                 switch r.phase {
                 case .recording:
-                    HStack(spacing: 4) { Image(nsImage: redDot); Text(clock(r.elapsed)).monospacedDigit() }
+                    HStack(spacing: 4) { Image(nsImage: redDot); MenuClock(live: r.live) }
                 case .processing, .exporting: Image(systemName: "ellipsis.circle")
                 case .review, .transcript: Image(systemName: "doc.text")
                 default: Image(systemName: "waveform.circle")

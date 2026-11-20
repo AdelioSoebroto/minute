@@ -60,7 +60,10 @@ struct TranscriptPane: View {
     @State private var naming: (id: UUID, all: Bool)?
     @State private var nameField = ""
     @State private var expanded: Set<UUID> = []
-    private var invitees: [String] {
+    /// Read once when the pane appears, not for every row on every keystroke.
+    @State private var invitees: [String] = []
+    @State private var canPlay = false
+    private static func loadInvitees(_ dir: URL?) -> [String] {
         guard let dir, let d = try? Data(contentsOf: dir.appendingPathComponent("meeting.json")),
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [] }
         return (j["attendees"] as? [String]) ?? []
@@ -70,19 +73,22 @@ struct TranscriptPane: View {
     private func tint(_ who: String) -> Color { who == "Me" ? .blue : who == "Others" ? .orange : who == "Speaker" ? .gray : .purple }
     private func matches(_ l: TLine) -> Bool { query.isEmpty || l.text.localizedCaseInsensitiveContains(query) || l.speaker.localizedCaseInsensitiveContains(query) }
 
-    private enum Item: Identifiable { case line(UUID), screen(ScreenEvent), mark(Mark)
-        var id: UUID { switch self { case .line(let i): return i; case .screen(let e): return e.id; case .mark(let m): return m.id } } }
+    /// A line is kept by its index, so a row never has to search the list for itself.
+    private enum Item: Identifiable { case line(UUID, Int), screen(ScreenEvent), mark(Mark)
+        var id: UUID { switch self { case .line(let i, _): return i; case .screen(let e): return e.id; case .mark(let m): return m.id } } }
 
-    /// The transcript with shown-on-screen moments slotted in by time.
+    /// The transcript with shown-on-screen moments slotted in by time (one pass).
     private var items: [Item] {
-        var out: [Item] = []; var pending = events.sorted { $0.t < $1.t }; var flags = marks.sorted { $0.t < $1.t }
-        for l in lines {
-            while let e = pending.first, Double(e.t) <= l.seconds { out.append(.screen(e)); pending.removeFirst() }
-            while let m = flags.first, Double(m.t) <= l.seconds { out.append(.mark(m)); flags.removeFirst() }
-            out.append(.line(l.id))
+        var out: [Item] = []; out.reserveCapacity(lines.count + events.count + marks.count)
+        let ev = events.sorted { $0.t < $1.t }, fl = marks.sorted { $0.t < $1.t }
+        var e = 0, f = 0
+        for (i, l) in lines.enumerated() {
+            while e < ev.count, Double(ev[e].t) <= l.seconds { out.append(.screen(ev[e])); e += 1 }
+            while f < fl.count, Double(fl[f].t) <= l.seconds { out.append(.mark(fl[f])); f += 1 }
+            out.append(.line(l.id, i))
         }
-        out += pending.map { .screen($0) }
-        out += flags.map { .mark($0) }
+        out += ev[e...].map { .screen($0) }
+        out += fl[f...].map { .mark($0) }
         return out
     }
 
@@ -111,13 +117,14 @@ struct TranscriptPane: View {
                 ContentUnavailableView("Nothing was heard", systemImage: "waveform.slash",
                                        description: Text("The recording had no speech Minute could pick up. Check the microphone, and for online meetings that the meeting audio was playing."))
             } else {
+                let known = Array(Set(lines.map(\.who))).filter { !["Me", "Others", "Speaker"].contains($0) }.sorted()
                 ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(items) { item in
                             switch item {
-                            case .line(let id):
-                                if let i = lines.firstIndex(where: { $0.id == id }) { row($lines[i]) }
+                            case .line(_, let i):
+                                if i < lines.count { row($lines[i], at: i, known: known) }
                             case .screen(let e): screenRow(e)
                             case .mark(let m): markRow(m)
                             }
@@ -129,12 +136,14 @@ struct TranscriptPane: View {
                     guard let j, let i = lines.firstIndex(where: { $0.id == j.id }) else { return }
                     query = ""
                     withAnimation(.spring(duration: 0.4)) { proxy.scrollTo(j.id, anchor: .center); flash = j.id }
-                    if Playback.available(in: dir), playback.playingID != j.id { playback.toggle(lines[i], next: i + 1 < lines.count ? lines[i + 1] : nil, in: dir) }
+                    if canPlay, playback.playingID != j.id { playback.toggle(lines[i], next: i + 1 < lines.count ? lines[i + 1] : nil, in: dir) }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if flash == j.id { withAnimation { flash = nil } } }
                 }
                 }
             }
         }
+        .onAppear { invitees = Self.loadInvitees(dir); canPlay = Playback.available(in: dir) }
+        .onChange(of: dir) { _, d in invitees = Self.loadInvitees(d); canPlay = Playback.available(in: d) }
         .onDisappear { playback.stop() }
         .alert(naming?.all == true ? "Rename every line from this speaker" : "Who is speaking?", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField("Name", text: $nameField)
@@ -155,8 +164,7 @@ struct TranscriptPane: View {
 
     private func setWho(_ who: String, for id: UUID) { if let i = lines.firstIndex(where: { $0.id == id }) { lines[i].who = who } }
 
-    private func speakerMenu(_ line: TLine) -> some View {
-        let known = Array(Set(lines.map(\.who))).filter { !["Me", "Others", "Speaker"].contains($0) }.sorted()
+    private func speakerMenu(_ line: TLine, known: [String]) -> some View {
         let invited = invitees.filter { n in !known.contains { $0.caseInsensitiveCompare(n) == .orderedSame } }
         let names = known
         return Menu {
@@ -208,11 +216,9 @@ struct TranscriptPane: View {
         .buttonStyle(.plain).accessibilityLabel("Screen at \(e.time): \(e.text)").accessibilityHint(open ? "Collapse" : "Expand")
     }
 
-    private func row(_ l: Binding<TLine>) -> some View {
+    private func row(_ l: Binding<TLine>, at idx: Int, known: [String]) -> some View {
         let line = l.wrappedValue
-        let idx = lines.firstIndex { $0.id == line.id } ?? 0
         let next = idx + 1 < lines.count ? lines[idx + 1] : nil
-        let canPlay = Playback.available(in: dir)
         return HStack(alignment: .top, spacing: 8) {
             Button { Haptic.tick(); playback.toggle(line, next: next, in: dir) } label: {
                 HStack(spacing: 4) {
@@ -224,7 +230,7 @@ struct TranscriptPane: View {
             }
             .buttonStyle(.plain).disabled(!canPlay).help(canPlay ? "Play from here" : "")
             .accessibilityLabel(canPlay ? "Play from \(line.time)" : "Time \(line.time)")
-            speakerMenu(line)
+            speakerMenu(line, known: known)
             TextField("", text: l.text, axis: .vertical).textStyle().font(.callout).accessibilityLabel("Transcript, \(line.speaker), \(line.time)")
             Button { remove(line) } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary) }
                 .buttonStyle(.borderless).help("Remove this line").accessibilityLabel("Remove this line")

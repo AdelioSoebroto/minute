@@ -99,6 +99,7 @@ struct MeetingWorkspace: View {
     @State private var showAsk = false
     @State private var jump: JumpRequest?
     @State private var notice: String?
+    @State private var narrow = false      // too narrow to show transcript and minutes side by side
 
     init(meeting: Meeting, lib: Library, r: Recorder, delete: @escaping () -> Void) {
         self.meeting = meeting; self.lib = lib; self.r = r; self.delete = delete
@@ -123,6 +124,7 @@ struct MeetingWorkspace: View {
                         } else if mode == 2 { transcriptPane }
                         else { minutesPane }
                     }
+                    .onChange(of: both, initial: true) { _, b in narrow = !b }
                 }
                 if showAsk {
                     Divider()
@@ -132,6 +134,13 @@ struct MeetingWorkspace: View {
             }
             Divider()
             footer
+        }
+        .background {      // ⌘1 ⌘2 ⌘3 switch the view, like Finder
+            Group {
+                Button("") { mode = narrow ? 1 : 0 }.keyboardShortcut("1", modifiers: .command)
+                Button("") { mode = 1 }.keyboardShortcut("2", modifiers: .command)
+                Button("") { mode = 2 }.keyboardShortcut("3", modifiers: .command)
+            }.opacity(0).accessibilityHidden(true)
         }
         .onAppear { if editor.tLines.isEmpty && !editor.hasMinutes { editor.load() } }
         .onDisappear { editor.save() }
@@ -152,10 +161,13 @@ struct MeetingWorkspace: View {
             Spacer()
             Button { withAnimation(.spring(duration: 0.3)) { showAsk.toggle() } } label: { Label("Claude", systemImage: "sparkles") }
                 .glassButton(prominent: showAsk).disabled(editor.tLines.isEmpty && !editor.hasMinutes)
-                .help("Tell Claude what the minutes missed, or ask about the meeting")
-            Picker("", selection: $mode) {
-                Text("Both").tag(0); Text("Minutes").tag(1); Text("Transcript").tag(2)
-            }.pickerStyle(.segmented).labelsHidden().frame(width: 230)
+                .keyboardShortcut("k", modifiers: .command)
+                .help("Tell Claude what the minutes missed, or ask about the meeting (⌘K)")
+            Picker("View", selection: Binding(get: { narrow && mode == 0 ? 1 : mode }, set: { mode = $0 })) {
+                if !narrow { Text("Both").tag(0) }
+                Text("Minutes").tag(1); Text("Transcript").tag(2)
+            }.pickerStyle(.segmented).labelsHidden().frame(width: narrow ? 170 : 230)
+            .help(narrow ? "Widen the window to see the transcript and minutes side by side" : "")
         }.padding(.horizontal, 24).padding(.vertical, 12)
     }
 
@@ -212,7 +224,7 @@ struct MeetingWorkspace: View {
                 }
                 if editor.hasMinutes {
                     Button { editor.exportAll { lib.refresh() } } label: { Text(meeting.hasPdf ? "Export again" : "Export Word & PDF").frame(minWidth: 120) }
-                        .glassButton(prominent: true).disabled(locked)
+                        .glassButton(prominent: true).disabled(locked).keyboardShortcut("e", modifiers: .command).help("Export Word and PDF (⌘E)")
                 }
             }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12)
         }

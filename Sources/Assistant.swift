@@ -63,6 +63,7 @@ struct AssistantPanel: View {
     @ObservedObject var editor: MeetingEditor
     @StateObject private var chat: AssistantChat
     @State private var field = ""
+    @FocusState private var focused: Bool
     var close: () -> Void
     var changed: () -> Void
 
@@ -91,6 +92,8 @@ struct AssistantPanel: View {
                     }.padding(14)
                 }
                 .onChange(of: chat.messages.count) { _, _ in withAnimation { proxy.scrollTo(chat.messages.last?.id, anchor: .bottom) } }
+                .onChange(of: chat.busy != nil) { _, b in if b { withAnimation { proxy.scrollTo("busy", anchor: .bottom) } } }
+                .onAppear { proxy.scrollTo(chat.messages.last?.id, anchor: .bottom) }
             }
             if chat.canUndo {
                 Button { chat.undo(editor: editor, then: changed) } label: { Label("Undo last change", systemImage: "arrow.uturn.backward") }
@@ -98,7 +101,7 @@ struct AssistantPanel: View {
             }
             HStack(alignment: .bottom) {
                 TextField("Tell Claude what it missed, or ask…", text: $field, axis: .vertical).textFieldStyle(.plain).lineLimit(1...5)
-                    .onSubmit { send() }
+                    .focused($focused).onSubmit { send() }
                 Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title3) }
                     .buttonStyle(.borderless).disabled(field.trimmingCharacters(in: .whitespaces).isEmpty || chat.busy != nil).accessibilityLabel("Send")
             }
@@ -106,6 +109,8 @@ struct AssistantPanel: View {
             .padding(10)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { focused = true }
+        .onExitCommand { close() }
     }
 
     private func send() { let t = field; field = ""; chat.send(t, editor: editor, then: changed) }
@@ -113,8 +118,8 @@ struct AssistantPanel: View {
     private var intro: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Point out anything the minutes missed or got wrong, and I'll fix them. For example:").font(.callout).foregroundStyle(.secondary)
-            ForEach(["Pak Aji owns the VA config check, due next Friday", "You missed that we agreed to test the LBA endpoint again", "Who raised the IP blocking issue?"], id: \.self) { s in
-                Button { field = s } label: { Text(s).font(.caption).multilineTextAlignment(.leading).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(["Add an action: Budi sends the revised proposal by Friday", "You missed that we agreed to run the test again next week", "Who raised the pricing question, and what was decided?"], id: \.self) { s in
+                Button { field = s; focused = true } label: { Text(s).font(.caption).multilineTextAlignment(.leading).padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.08))) }.buttonStyle(.plain)
             }
         }

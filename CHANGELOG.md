@@ -3,6 +3,17 @@
 All notable changes to Minute. The newest version is first. Each release lists what is **new**, what was **improved** and what was **fixed**; the app shows
 the current version's notes once after an update (Help > What's New). Format follows [Keep a Changelog](https://keepachangelog.com), versions follow [SemVer](https://semver.org).
 
+## [1.2.1] - 2026-11-20
+
+### Improved
+- **Lighter while recording**: the clock and level meters now redraw only themselves. Before, they redrew the whole app (library, open meeting, minutes page) 10 times a second during a meeting.
+- **Faster transcript editing**: long transcripts no longer re-read files or search the whole list for every row on each keystroke. Speakers, invitees and playback are worked out once.
+- **The library loads in the background**, so a meetings folder in OneDrive or iCloud that has to download can't freeze the window. Several refreshes in a row are merged into one.
+- **Fits smaller windows**: the main window can be narrower (1000 pt). When there isn't room for transcript and minutes side by side, the view picker offers only Minutes and Transcript instead of a "Both" that showed one.
+- **Keyboard**: ⌘K opens Claude, ⌘E exports, ⌘1/⌘2/⌘3 switch Both/Minutes/Transcript, Delete moves the selected meeting to the Bin (with confirmation), and Esc closes the Claude panel.
+- Claude panel: the text field is ready to type in when it opens, it scrolls to "Thinking…", and its examples are generic.
+- Clearer empty states in the library ("Hold the record button above…"; a filter with no matches says so).
+
 ## [1.2.0] - 2026-10-24
 
 ### New

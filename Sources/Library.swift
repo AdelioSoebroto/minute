@@ -190,16 +190,16 @@ struct TranscriptView: View {
     let text: String
     var query = ""
 
-    struct Line: Identifiable { let id = UUID(); let time: String; let who: String; let text: String }
+    struct Line: Identifiable { let id: Int; let time: String; let who: String; let text: String }
 
     var lines: [Line] {
-        text.split(separator: "\n").compactMap { raw -> Line? in
+        text.split(separator: "\n").enumerated().compactMap { n, raw -> Line? in
             let s = String(raw)
             guard s.hasPrefix("["), let close = s.firstIndex(of: "]") else { return nil }
             let time = String(s[s.index(after: s.startIndex)..<close])
             let rest = String(s[s.index(after: close)...]).trimmingCharacters(in: .whitespaces)
             guard let colon = rest.firstIndex(of: ":") else { return nil }
-            return Line(time: time, who: String(rest[..<colon]),
+            return Line(id: n, time: time, who: String(rest[..<colon]),
                         text: String(rest[rest.index(after: colon)...]).trimmingCharacters(in: .whitespaces))
         }
     }
@@ -257,15 +257,39 @@ final class Library: ObservableObject {
     @Published var meetings: [Meeting] = []
 
     /// Only folders whose files changed since the last refresh are read again, so a library of hundreds of meetings opens instantly.
-    private var cache: [URL: (stamp: [Date], meeting: Meeting)] = [:]
+    typealias Cache = [URL: (stamp: [Date], meeting: Meeting)]
+    static let folderDate: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"; f.locale = Locale(identifier: "en_US_POSIX"); return f }()
+    private var cache: Cache = [:]
+    private var running = false, again = false
+    private var waiting: [() -> Void] = []
 
-    private func mtime(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
+    private nonisolated static func mtime(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
 
-    func refresh() {
+    /// Reads the library off the main thread (it may sit in iCloud or OneDrive, where a read can wait on a download),
+    /// so the window never stalls. Calls that arrive while a read is running are folded into one more pass.
+    func refresh(then done: (() -> Void)? = nil) {
+        if let done { waiting.append(done) }
+        if running { again = true; return }
+        running = true
+        let root = momRoot, old = cache
+        Task.detached(priority: .userInitiated) {
+            let next = Library.scan(root: root, cache: old)
+            await MainActor.run {
+                self.cache = next
+                let list = next.values.map(\.meeting).sorted { $0.date > $1.date }
+                if next.mapValues(\.stamp) != old.mapValues(\.stamp) || self.meetings.isEmpty != list.isEmpty { self.meetings = list }
+                self.running = false
+                if self.again { self.again = false; self.refresh() }
+                else { let w = self.waiting; self.waiting = []; w.forEach { $0() } }
+            }
+        }
+    }
+
+    nonisolated static func scan(root: URL, cache: Cache) -> Cache {
         let fm = FileManager.default
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"; f.locale = Locale(identifier: "en_US_POSIX")
-        let dirs = (try? fm.contentsOfDirectory(at: momRoot, includingPropertiesForKeys: nil)) ?? []
-        var next: [URL: (stamp: [Date], meeting: Meeting)] = [:]
+        let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        var next: Cache = [:]
         for d in dirs {
             guard (try? d.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
                   let date = f.date(from: String(d.lastPathComponent.prefix(15))) else { continue }
@@ -276,14 +300,13 @@ final class Library: ObservableObject {
             next[d] = (stamp, Meeting(dir: d, date: date, data: data,
                                       hasDocx: exportedFile(in: d, ext: "docx") != nil, hasPdf: exportedFile(in: d, ext: "pdf") != nil,
                                       transcript: tr.replacingOccurrences(of: "# Transcript\n\n", with: ""),
-                                      actions: Library.loadActions(d)))
+                                      actions: loadActions(d)))
         }
-        cache = next
-        meetings = next.values.map(\.meeting).sorted { $0.date > $1.date }
+        return next
     }
 
     /// The model's own list of tasks (task, owner, due) from the minutes run; empty for older meetings.
-    static func loadActions(_ d: URL) -> [ActionRecord] {
+    nonisolated static func loadActions(_ d: URL) -> [ActionRecord] {
         struct A: Decodable { var action_items: [ActionRecord]? }
         guard let raw = try? Data(contentsOf: d.appendingPathComponent("analysis.json")), let a = try? JSONDecoder().decode(A.self, from: raw) else { return [] }
         return (a.action_items ?? []).filter { !$0.task.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -297,6 +320,7 @@ final class Library: ObservableObject {
 /// Record controls inside the main window, so recording does not depend on the menu bar.
 struct RecordCard: View {
     @ObservedObject var r: Recorder
+    @ObservedObject var live: LiveMeter
     @Environment(\.openWindow) private var openWindow
     func showFlow() { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) }
 
@@ -318,12 +342,12 @@ struct RecordCard: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) { Circle().fill(.red).frame(width: 7, height: 7); Text("Recording · \(r.mode.rawValue)").font(.caption.weight(.semibold)) }
-                        Text(clock(r.elapsed)).font(.system(size: 30, weight: .light, design: .rounded)).monospacedDigit()
+                        Text(clock(live.elapsed)).font(.system(size: 30, weight: .light, design: .rounded)).monospacedDigit()
                     }
                     Spacer(minLength: 0)
                     HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5, size: 58, showTitle: false) { r.stop(); showFlow() }
                 }
-                Waveform(samples: r.history)
+                Waveform(samples: live.history)
                 if let w = r.warning {
                     Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
@@ -419,19 +443,21 @@ struct LibraryView: View {
         if cal.isDateInToday(d) { return "Today" }
         if cal.isDateInYesterday(d) { return "Yesterday" }
         if let w = cal.dateInterval(of: .weekOfYear, for: Date()), w.contains(d) { return "This week" }
-        let f = DateFormatter(); f.dateFormat = "MMMM yyyy"; return f.string(from: d)
+        return Self.monthYear.string(from: d)
     }
+    private static let monthYear: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMMM yyyy"); return f }()
 
-    var groups: [(String, [Meeting])] {
+    func groups(_ list: [Meeting]) -> [(String, [Meeting])] {
         var order: [String] = []; var dict: [String: [Meeting]] = [:]
-        for m in filtered { let b = bucket(m.date); if dict[b] == nil { order.append(b) }; dict[b, default: []].append(m) }
+        for m in list { let b = bucket(m.date); if dict[b] == nil { order.append(b) }; dict[b, default: []].append(m) }
         return order.map { ($0, dict[$0]!) }
     }
 
     var body: some View {
+        let shown = filtered          // filtered once per redraw, not once per use
         NavigationSplitView {
             VStack(spacing: 0) {
-            RecordCard(r: r)
+            RecordCard(r: r, live: r.live)
             ForEach(r.unfinished, id: \.self) { d in RecoveryCard(r: r, dir: d) }
             Picker("Show", selection: $scope) { Text("All").tag(0); Text("This week").tag(1); Text("Drafts").tag(2); Text("Exported").tag(3) }
                 .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12).padding(.vertical, 6)
@@ -440,16 +466,18 @@ struct LibraryView: View {
                     Label("Open items", systemImage: "checklist").tag(Self.openItemsID)
                         .badge(tracker.openCount(lib.meetings))
                 }
-                ForEach(groups, id: \.0) { name, items in
+                ForEach(groups(shown), id: \.0) { name, items in
                     Section(name) { ForEach(items) { m in row(m).tag(m.id) } }
                 }
             }
             .searchable(text: $query, placement: .sidebar, prompt: "Search meetings and transcripts")
+            .onDeleteCommand { if let m = lib.meetings.first(where: { $0.id == selection }) { confirmDelete = m } }
             .overlay {
                 if lib.meetings.isEmpty {
-                    ContentUnavailableView("No meetings yet", systemImage: "waveform", description: Text("Record one from the menu bar."))
-                } else if filtered.isEmpty {
-                    ContentUnavailableView.search(text: query)
+                    ContentUnavailableView("No meetings yet", systemImage: "waveform", description: Text("Hold the record button above when a meeting starts."))
+                } else if shown.isEmpty {
+                    if query.isEmpty { ContentUnavailableView("Nothing here", systemImage: "tray", description: Text("No meetings match this filter.")) }
+                    else { ContentUnavailableView.search(text: query) }
                 }
             }
             }
@@ -460,19 +488,18 @@ struct LibraryView: View {
             else if let m = lib.meetings.first(where: { $0.id == selection }) { detail(m) }
             else { ContentUnavailableView("Select a meeting", systemImage: "doc.text.magnifyingglass", description: Text("Its minutes and transcript appear here.")) }
         }
-        .frame(minWidth: 1260, minHeight: 640)
+        .frame(minWidth: 1000, minHeight: 620)
         .safeAreaInset(edge: .top, spacing: 0) { CrashBanner(s: Stability.shared) }
         .sheet(isPresented: $showWhatsNew) { WhatsNewView { AppInfo.markWhatsNewSeen(); showWhatsNew = false } }
         .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in showWhatsNew = true }
         .onReceive(NotificationCenter.default.publisher(for: .openMeeting)) { n in
             guard let u = n.object as? URL else { return }
-            lib.refresh()
-            selection = lib.meetings.first { $0.dir.standardizedFileURL.path == u.standardizedFileURL.path }?.id ?? u
+            lib.refresh { selection = lib.meetings.first { $0.dir.standardizedFileURL.path == u.standardizedFileURL.path }?.id ?? u }
         }
         .onChange(of: lib.meetings) { _, m in SpotlightIndex.update(m) }
         .onAppear {
             if AppInfo.shouldShowWhatsNew() { showWhatsNew = true }
-            lib.refresh(); if selection == nil { selection = lib.meetings.first?.id }
+            lib.refresh { if selection == nil { selection = lib.meetings.first?.id } }
             AppDelegate.showLibrary = { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }
             AppDelegate.isBusy = { r.isRecording || r.isBusy }
         }
@@ -509,8 +536,7 @@ struct RecoveryCard: View {
     @ObservedObject var r: Recorder
     let dir: URL
     var when: String {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmm"; f.locale = Locale(identifier: "en_US_POSIX")
-        return f.date(from: String(dir.lastPathComponent.prefix(15))).map { $0.formatted(date: .abbreviated, time: .shortened) } ?? dir.lastPathComponent
+        return Library.folderDate.date(from: String(dir.lastPathComponent.prefix(15))).map { $0.formatted(date: .abbreviated, time: .shortened) } ?? dir.lastPathComponent
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

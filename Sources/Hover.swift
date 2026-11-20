@@ -99,13 +99,14 @@ final class MeetingDetector: ObservableObject {
 
 struct FloatingView: View {
     @ObservedObject var r: Recorder
+    @ObservedObject var live: LiveMeter
     @ObservedObject var detector: MeetingDetector
     var dismiss: () -> Void
     var openApp: () -> Void
     @State private var pulse = false
 
     private var ended: Bool {
-        guard r.isRecording, r.mode == .online, r.elapsed > 60, detector.meeting == nil, let seen = detector.lastSeen else { return false }
+        guard r.isRecording, r.mode == .online, live.elapsed > 60, detector.meeting == nil, let seen = detector.lastSeen else { return false }
         return Date().timeIntervalSince(seen) > 45
     }
 
@@ -124,11 +125,11 @@ struct FloatingView: View {
         HStack(spacing: 12) {
             Circle().fill(.red).frame(width: 10, height: 10).opacity(pulse ? 0.35 : 1).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
-                Text(clock(r.elapsed)).font(.system(size: 17, weight: .medium, design: .rounded)).monospacedDigit()
+                Text(clock(live.elapsed)).font(.system(size: 17, weight: .medium, design: .rounded)).monospacedDigit()
                 Text(ended ? "Meeting ended? Hold to stop" : r.warning != nil ? "Check audio" : r.micPaused ? "Recording · mic paused (muted)" : "Recording · \(r.mode.rawValue)")
                     .font(.caption2).foregroundStyle(ended || r.warning != nil ? Color.orange : .secondary)
             }
-            Waveform(samples: Array(r.history.suffix(18))).frame(width: 54, height: 22)
+            Waveform(samples: Array(live.history.suffix(18))).frame(width: 54, height: 22)
             FlagMenu(r: r)
             Button { openApp() } label: { Image(systemName: "arrow.up.forward.app") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary).help("Open Minute").accessibilityLabel("Open Minute")
@@ -192,7 +193,7 @@ final class FloatingControl {
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
             p.isMovableByWindowBackground = true; p.backgroundColor = .clear; p.hasShadow = true; p.isOpaque = false
             p.sharingType = .none          // not visible when the screen is shared or recorded
-            let host = NSHostingView(rootView: FloatingView(r: r, detector: .shared, dismiss: { [weak self] in
+            let host = NSHostingView(rootView: FloatingView(r: r, live: r.live, detector: .shared, dismiss: { [weak self] in
                 self?.dismissed = MeetingDetector.shared.meeting; self?.update()
             }, openApp: { [weak self] in self?.openApp() }))
             host.sizingOptions = [.intrinsicContentSize]

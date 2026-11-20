@@ -402,6 +402,8 @@ struct SettingsView: View {
     @State private var thumbs = ScreenContext.keepThumbnails
     @State private var useCalendar = CalendarContext.enabled
     @State private var muteGate = Recorder.muteGate
+    @State private var voiceProc = MicRecorder.voiceProcessing
+    @State private var proofread = (Storage.configValue("ai_proofread") as? Bool) ?? true
     @State private var openAtLogin = Login.enabled
     @State private var spotlight = SpotlightIndex.enabled
     @State private var language = (Storage.configValue("mom_language") as? String) ?? "auto"
@@ -482,6 +484,13 @@ struct SettingsView: View {
             } header: { Text("Privacy") }
 
             Section {
+                Toggle("Clean up my microphone in online meetings (voice processing)", isOn: $voiceProc).onChange(of: voiceProc) { _, v in MicRecorder.voiceProcessing = v }
+                HStack {
+                    Text("Removes the meeting audio echoing from your speakers and background noise, so your words transcribe cleanly. Onsite recordings are never processed, so everyone in the room is heard.").font(.caption).foregroundStyle(.secondary)
+                    Button("Mic Modes…") { AVCaptureDevice.showSystemUserInterface(.microphoneModes) }.help("Choose Voice Isolation to keep only your voice")
+                }
+                Toggle("Proofread transcripts with Claude", isOn: $proofread).onChange(of: proofread) { _, v in Storage.writeConfig(["ai_proofread": v]) }
+                Text("When Claude is the AI engine, it corrects misheard words in the transcript using the conversation, your names list and what was on screen, before the minutes are written. Timestamps and meaning stay; the raw transcript is kept as transcript.raw.md.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Pause my microphone while I'm muted in the meeting", isOn: $muteGate).onChange(of: muteGate) { _, v in Recorder.muteGate = v }
                 Text("For online meetings only. Works with meeting apps that let go of the microphone when you mute (most do); if yours keeps it open, Minute records as usual. Everyone else still comes through the meeting audio.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Open Minute when I log in", isOn: $openAtLogin).onChange(of: openAtLogin) { _, v in Login.set(v); openAtLogin = Login.enabled }

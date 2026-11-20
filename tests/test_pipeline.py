@@ -375,6 +375,29 @@ class Assistant(unittest.TestCase):
         m.assist(self.d, "hi"); self.assertEqual(m.CFG["claude_model"], "claude-sonnet-5-5")
 
 
+class Proofread(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.saved = (m.claude_chat, dict(m.CFG)); m.CFG["llm_provider"] = "claudecode"
+        self.d = Path(tempfile.mkdtemp())
+    def tearDown(self): m.claude_chat = self.saved[0]; m.CFG.clear(); m.CFG.update(self.saved[1])
+    def test_fixes_misheard_words_keeps_timestamps_and_rejects_rewrites(self):
+        tr = "[00:00:01] Me: kita pakai tukumsel buat campaign\n[00:00:05] Others: oke siap\n[00:00:09] Me: budgetnya empat ratus lima puluh juta"
+        m.claude_chat = lambda system, user, schema=None, **k: json.dumps({"lines": ["kita pakai Telkomsel buat campaign", "oke siap", "Anggaran yang disepakati adalah Rp450 juta untuk kuartal ini."]})
+        out = m.ai_proofread(tr, self.d).splitlines()
+        self.assertEqual(out[0], "[00:00:01] Me: kita pakai Telkomsel buat campaign")
+        self.assertEqual(out[1], "[00:00:05] Others: oke siap")
+        self.assertEqual(out[2], "[00:00:09] Me: budgetnya empat ratus lima puluh juta")      # a rewrite is refused
+        self.assertTrue((self.d / "transcript.raw.md").exists())
+    def test_wrong_line_count_keeps_the_original(self):
+        tr = "[00:00:01] Me: satu\n[00:00:02] Me: dua"
+        m.claude_chat = lambda *a, **k: json.dumps({"lines": ["satu"]})
+        self.assertEqual(m.ai_proofread(tr, self.d), tr)
+    def test_off_without_claude(self):
+        m.CFG["llm_provider"] = "ollama"; m.claude_chat = lambda *a, **k: 1 / 0
+        self.assertEqual(m.ai_proofread("[00:00:01] Me: x", self.d), "[00:00:01] Me: x")
+
+
 class RunDecoding(unittest.TestCase):
     def test_run_survives_invalid_utf8_output(self):
         r = m.run(["/usr/bin/python3", "-c", "import sys; sys.stdout.buffer.write(b'ok \\xaf done')"])

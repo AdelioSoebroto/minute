@@ -435,8 +435,10 @@ def screen_terms(session: Path):
         for w in re.findall(r"\b[A-Z][A-Za-z0-9]{2,}\b|\b[A-Z]{2,6}\b", e["text"]): words[w] = words.get(w, 0) + 1
     return [w for w, _ in sorted(words.items(), key=lambda kv: -kv[1])[:60]]
 
+SESSION_TERMS = []      # names from this meeting's calendar event and screens, so Whisper spells them right from the start
+
 def whisper_prompt():
-    terms = ", ".join(glossary()[-40:])
+    terms = ", ".join(SESSION_TERMS[:20] + glossary()[-40:])
     base = ("Meeting in English and Bahasa Indonesia, formal and casual, switching between them. "
             "Obrolan santai dan formal: gue, lo, nggak, udah, banget, sih, dong, deh, kok, wkwk, deploy, follow up, approval. "
             "Acronyms: CTR, KPI, SLA, API, SSL, VPN, UAT, PIC, MoM. Transcribe exactly as spoken, keep slang and English words as said.")
@@ -1461,6 +1463,50 @@ def assist(d: Path, message: str):
     write_atomic(d / "assistant.json", json.dumps(hist[-60:], ensure_ascii=False, indent=2))
     print("ASSIST " + json.dumps({"reply": out.get("reply", ""), "changed": changed}, ensure_ascii=False), flush=True)
 
+PROOF_SCHEMA = {"type": "object", "properties": {"lines": {"type": "array", "items": {"type": "string"}}}}
+PROOF_SYSTEM = """You proofread a speech-to-text transcript of a work meeting in Indonesia. People mix Bahasa Indonesia and English, formal and casual (slang, Jaksel style).
+Fix only speech-recognition errors: misheard words, wrong or misspelled names, brands, products, teams, acronyms and technical terms, wrong word boundaries, and garbled phrases whose intended words are clear from the conversation, the known names and what was on screen.
+Do not translate, paraphrase, summarize, formalize slang, remove fillers, reorder, merge or split lines, or add anything. Keep each line's language as spoken. If you are not sure what was said, leave the line exactly as it is.
+Return exactly the same number of lines, in the same order, as plain text without the line numbers."""
+
+def _proof_chunk(texts, context):
+    import difflib
+    body = context + "\n\nLINES:\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+    out = json.loads(claude_chat(PROOF_SYSTEM, body, PROOF_SCHEMA)).get("lines", [])
+    if len(out) != len(texts): raise ClaudeError(f"proofread returned {len(out)} lines for {len(texts)}")
+    fixed, n = [], 0
+    for old, new in zip(texts, out):
+        new = re.sub(r"^\d+\.\s+", "", str(new)).strip()
+        ok = new and (new == old or difflib.SequenceMatcher(None, old.lower(), new.lower()).ratio() >= 0.55)   # a correction, never a rewrite
+        fixed.append(new if ok else old); n += ok and new != old
+    return fixed, n
+
+def ai_proofread(transcript: str, d: Path) -> str:
+    """Claude corrects what Whisper misheard, line by line, keeping timestamps, speakers and meaning. Only with Claude as the engine."""
+    if not use_claude() or not CFG.get("ai_proofread", True): return transcript
+    rows = []
+    for line in transcript.splitlines():
+        m_ = re.match(r"(\[\d+:\d+:\d+\]\s*[^:]+:\s*)(.*)", line)
+        rows.append((m_.group(1), m_.group(2)) if m_ else ("", line))
+    cal = load_json(d / "meeting.json", {})
+    context = ("KNOWN NAMES AND TERMS (spelling reference, not proof they were said): " + "; ".join((lexicon() + glossary()[-80:])[:600])[:5000]
+               + ("\nSHOWN ON SCREEN: " + "; ".join(screen_terms(d)) if screen_terms(d) else "")
+               + (f"\nCALENDAR EVENT: {cal.get('title', '')}; invited: {', '.join(cal.get('attendees', [])[:25])}" if cal.get("title") else ""))
+    size = 120
+    chunks = [rows[i:i + size] for i in range(0, len(rows), size)]
+    stage("Proofreading the transcript with Claude")
+    from concurrent.futures import ThreadPoolExecutor
+    def work(ch):
+        try: return _proof_chunk([t for _, t in ch], context)
+        except Exception as e: log("proofread chunk skipped: " + repr(e)[:160]); return [t for _, t in ch], 0
+    with ThreadPoolExecutor(max_workers=3) as ex: results = list(ex.map(work, chunks))
+    out, total = [], 0
+    for ch, (texts, n) in zip(chunks, results):
+        total += n; out += [p_ + t for (p_, _), t in zip(ch, texts)]
+    log(f"proofread: {total} of {len(rows)} lines corrected")
+    (d / "transcript.raw.md").write_text("# Transcript\n\n" + transcript + "\n")
+    return "\n".join(out)
+
 def ask(d: Path, question: str):
     tr = (d / "transcript.md").read_text() if (d / "transcript.md").exists() else ""
     if not tr: raise SystemExit("This meeting has no transcript yet.")
@@ -1592,6 +1638,8 @@ def main():
     d, tracks = prepare(Path(args[0]).expanduser().resolve())
     if not tracks: raise SystemExit("No audio found in " + str(d))
     if not Path(CFG["whisper_model"]).exists(): raise SystemExit("Whisper model missing: " + CFG["whisper_model"])
+    cal = load_json(d / "meeting.json", {})
+    SESSION_TERMS[:] = [x for x in cal.get("attendees", [])[:15] + screen_terms(d)[:15] if x]
     segs = []
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -1619,6 +1667,8 @@ def main():
             ensure_ollama(); transcript = fix_terms(transcript, screen_terms(d))
         except (Exception, SystemExit) as e:
             log("name check skipped: " + repr(e))
+        try: transcript = ai_proofread(transcript, d)
+        except Exception as e: log("proofread skipped: " + repr(e)[:160])
     (d / "transcript.md").write_text("# Transcript\n\n" + transcript + "\n")
     (d / "transcript.orig.md").write_text("# Transcript\n\n" + transcript + "\n")
     if len(transcript) < 80: raise SystemExit("Transcript is nearly empty. Check microphone / meeting audio levels.")

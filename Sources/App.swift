@@ -218,7 +218,7 @@ final class Recorder: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             micSeg = 1; sysSeg = 1; sysHeard = false; warning = nil
-            try mic.start(url: segURL(dir, "mic", 1))
+            try mic.start(url: segURL(dir, "mic", 1), voiceProcessing: mode == .online && MicRecorder.voiceProcessing)
             if mode == .online { try tap.start(url: segURL(dir, "system", 1)) }
         } catch {
             mic.stop(); tap.stop()
@@ -312,7 +312,7 @@ final class Recorder: ObservableObject {
             let now = elapsed
             if isMic {
                 mic.stop(); segLog?.close(segURL(dir, "mic", micSeg).lastPathComponent, at: now)
-                micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg)); segLog?.open(segURL(dir, "mic", micSeg).lastPathComponent, at: now)
+                micSeg += 1; try mic.start(url: segURL(dir, "mic", micSeg), voiceProcessing: mode == .online && MicRecorder.voiceProcessing); segLog?.open(segURL(dir, "mic", micSeg).lastPathComponent, at: now)
                 if micPaused { mic.setGated(true) }
             } else {
                 tap.stop(); segLog?.close(segURL(dir, "system", sysSeg).lastPathComponent, at: now)
@@ -717,6 +717,11 @@ struct PanelView: View {
             HStack(spacing: 8) {
                 SourceChip(symbol: "mic.fill", label: "Mic", level: r.micLevel)
                 if r.mode == .online { SourceChip(symbol: "speaker.wave.2.fill", label: "Meeting", level: r.sysLevel) }
+            }
+            if r.mode == .online && MicRecorder.voiceProcessing {
+                Button { AVCaptureDevice.showSystemUserInterface(.microphoneModes) } label: {
+                    Label(AVCaptureDevice.activeMicrophoneMode == .voiceIsolation ? "Voice Isolation on" : "Mic mode: choose Voice Isolation", systemImage: "waveform.badge.mic")
+                }.buttonStyle(.borderless).font(.caption).help("Opens the macOS mic modes. Voice Isolation keeps only your voice.")
             }
             if r.micPaused {
                 Label("Your mic is paused while you're muted in the meeting", systemImage: "mic.slash.fill").font(.caption).foregroundStyle(.secondary)

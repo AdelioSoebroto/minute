@@ -177,15 +177,41 @@ final class MicRecorder {
         }
     }
 
-    func start(url: URL) throws {
+    /// Apple voice processing for your mic in online meetings: removes the meeting audio echoing from the speakers and background noise,
+    /// and makes the Voice Isolation mic mode available. Off for onsite meetings, where everyone in the room must be heard.
+    static var voiceProcessing: Bool {
+        get { UserDefaults.standard.object(forKey: "voiceProcessing") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "voiceProcessing") }
+    }
+    private(set) var processing = false
+
+    func start(url: URL, voiceProcessing: Bool = false) throws {
         let input = engine.inputNode
+        processing = false
+        if input.isVoiceProcessingEnabled != voiceProcessing {
+            do { try input.setVoiceProcessingEnabled(voiceProcessing) } catch { NSLog("Minute: voice processing unavailable: %@", error.localizedDescription) }
+        }
+        if input.isVoiceProcessingEnabled {
+            processing = true
+            if #available(macOS 14.0, *) {      // keep the meeting at full volume: no ducking of other audio
+                input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
+            }
+        }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0 else { throw CaptureError(message: "No microphone available.") }
-        let f = try AVAudioFile(forWriting: url, settings: format.settings, commonFormat: format.commonFormat, interleaved: format.isInterleaved)
+        // With voice processing macOS reports several identical channels: keep one, so the file is ordinary mono.
+        let fileFormat = format.channelCount > 1 ? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false)! : format
+        let f = try AVAudioFile(forWriting: url, settings: fileFormat.settings, commonFormat: fileFormat.commonFormat, interleaved: fileFormat.isInterleaved)
         attach(file: f)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buf, _ in
-            self?.level.update(peak(buf))
-            self?.handle(buf)
+            guard let self else { return }
+            self.level.update(peak(buf))
+            if buf.format.channelCount > 1, let mono = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: buf.frameLength),
+               let src = buf.floatChannelData, let dst = mono.floatChannelData {
+                mono.frameLength = buf.frameLength
+                memcpy(dst[0], src[0], Int(buf.frameLength) * MemoryLayout<Float>.size)
+                self.handle(mono)
+            } else { self.handle(buf) }
         }
         try engine.start()
     }

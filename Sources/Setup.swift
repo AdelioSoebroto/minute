@@ -485,7 +485,7 @@ struct SettingsView: View {
                     .onChange(of: proofread) { _, v in Storage.writeConfig(["ai_proofread": v]) }
             }
         }
-        .formStyle(.grouped).frame(height: 560)
+        .formStyle(.grouped).frame(height: 420)
     }
 
     private var template: some View {
@@ -496,10 +496,12 @@ struct SettingsView: View {
                 if tp.generic, let logo = PaperAssets.logo {
                     LabeledContent("Logo") { Image(nsImage: logo).resizable().scaledToFit().frame(height: 28) }
                 }
+            }
+            Section("Change template") {
                 TemplatePicker { tplVersion += 1 }.id(tplVersion)
             }
         }
-        .formStyle(.grouped).frame(height: 460)
+        .formStyle(.grouped).frame(height: 500)
     }
 
     private var storage: some View {

@@ -132,12 +132,12 @@ struct MeetingWorkspace: View {
 
     var body: some View {
         GeometryReader { geo in
-            let both = geo.size.width >= 940          // too narrow for both (e.g. with Claude open): show one at a time
+            let both = geo.size.width >= 1060         // too narrow for both (e.g. with Claude open): show one at a time
             Group {
                 if both && mode == 0 {
                     HSplitView {
                         transcriptPane.frame(minWidth: 340, idealWidth: 400)
-                        minutesPane.frame(minWidth: 520)
+                        minutesPane.frame(minWidth: 700)
                     }
                 } else if mode == 2 { transcriptPane }
                 else { minutesPane }
@@ -202,7 +202,7 @@ struct MeetingWorkspace: View {
                 Divider()
                 Button(role: .destructive, action: delete) { Label("Move to Bin…", systemImage: "trash") }
             } label: { Label("More", systemImage: "ellipsis.circle") }
-            .help("More actions")
+            .accessibilityLabel("More actions").help("More actions")
             if editor.hasMinutes {
                 Button { editor.exportAll { lib.refresh() } } label: { Label(meeting.hasPdf ? "Export Again" : "Export", systemImage: "arrow.up.doc") }
                     .disabled(locked).help("Make the Word document and PDF (⌘E)")
@@ -290,7 +290,7 @@ struct MeetingWorkspace: View {
                 NSSharingService(named: .composeEmail)?.perform(withItems: items)
             }
         } label: { Label(notice ?? "Share", systemImage: notice == nil ? "square.and.arrow.up" : "checkmark") }
-            .help(notice ?? "Copy, save or email the minutes")
+            .accessibilityLabel("Share").help(notice ?? "Copy, save or email the minutes")
     }
 
 }

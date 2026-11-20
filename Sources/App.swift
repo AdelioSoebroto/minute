@@ -211,6 +211,16 @@ final class Recorder: ObservableObject {
         case "transcript": tLines = TLine.parse(transcript); phase = .transcript
         case "export": phase = .done
         case "processing": phase = .processing("Transcribing Me: 2 of 5 min")
+        case "recording":       // the recording UI with simulated levels; nothing is captured
+            phase = .recording; started = Date()
+            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.phase == .recording else { return }
+                    let m = Float.random(in: 0...0.25), sy = Float.random(in: 0...0.3)
+                    var h = self.live.history; h.removeFirst(); h.append(max(m, sy))
+                    self.live.elapsed = Date().timeIntervalSince(self.started); self.live.micLevel = m; self.live.sysLevel = sy; self.live.history = h
+                }
+            }
         default: break
         }
     }
@@ -368,6 +378,7 @@ final class Recorder: ObservableObject {
     }
 
     func stop() {
+        if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == "recording" { timer?.invalidate(); timer = nil; phase = .idle; return }   // demo: nothing was captured
         guard isRecording, let dir = session else { return }
         timer?.invalidate(); timer = nil
         unwatchDevices()
@@ -653,9 +664,9 @@ struct RoundButton: View {
         .animation(.snappy(duration: 0.25), value: armed)
         .help(armed ? "Click Stop to finish the recording" : title)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
+        .accessibilityLabel(armed ? "Stop, press again to finish the recording" : title)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { disarm?.cancel(); armed = false; action() }
+        .accessibilityAction { tap() }
     }
 }
 
@@ -910,7 +921,10 @@ struct StepRecord: View {
             case .recording:
                 Hero(symbol: "record.circle", tint: .red, title: "Recording", subtitle: "Use the menu bar icon to stop.")
             default:
-                Hero(symbol: "waveform.circle", tint: .secondary, title: "Ready when you are", subtitle: "Click record in the menu bar or the Meetings window to begin.")
+                Hero(symbol: "waveform.circle", tint: .secondary, title: "Ready when you are", subtitle: r.mode.hint)
+                Picker("Mode", selection: $r.mode) { ForEach(Mode.allCases) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 220).padding(.top, 4)
+                RoundButton(title: "Record", symbol: "circle.fill", tint: .red, size: 72) { r.start() }.padding(.top, 6)
             }
             Spacer()
         }.frame(maxWidth: .infinity)
@@ -1055,7 +1069,7 @@ struct MinuteApp: App {
                 if ProcessInfo.processInfo.environment["MINUTE_DEMO"] == "movetest" { r.moveTest(); return }
                 if let d = ProcessInfo.processInfo.environment["MINUTE_DEMO"] {
                     if d == "draft", let dir = ProcessInfo.processInfo.environment["MINUTE_DIR"] { r.draft(URL(fileURLWithPath: dir)) } else { r.demo(d) }
-                    openWindow(id: d == "library" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: d == "library" || d == "recording" ? "library" : "minute"); NSApp.activate(ignoringOtherApps: true)
                 }
             }
         }

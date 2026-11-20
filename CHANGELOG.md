@@ -20,6 +20,11 @@ the current version's notes once after an update (Help > What's New). Format fol
 
 ### Fixed
 - The "show where this was said" button on topics was missing from past meetings; it's back.
+- The minutes page no longer gets cut off when the sidebar and Claude are both open: it shrinks to fit, like zoom to fit in Preview. Side by side is only used when the whole page fits.
+- Stop asks for a second press with VoiceOver too, not only with the mouse.
+- Settings > Template now shows your current template as selected. This Mac shows "Claude (your login)" and the model's name instead of "Claude API" and a model ID.
+- The Recording window shows a record button and the Online/Onsite switch when idle, instead of pointing elsewhere.
+- VoiceOver reads the Filter, More and Share toolbar menus by name.
 
 ## [1.2.1] - 2026-11-20
 

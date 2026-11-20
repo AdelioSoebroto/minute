@@ -319,7 +319,8 @@ def doctor():
          "ok": bool(shutil.which("whisper-cli") and shutil.which("ffmpeg")), "action": "tools", "size": 0.1, "needs_brew": True},
         {"id": "whisper", "title": "Speech recognition model", "detail": "Whisper large-v3-turbo, English and Bahasa Indonesia.",
          "ok": Path(CFG["whisper_model"]).exists(), "action": "whisper", "size": 0.57},
-        *([{"id": "claude", "title": "Claude API", "detail": f"The minutes are written online by {CFG.get('claude_model')}. Speech recognition still runs on this Mac.",
+        *([{"id": "claude", "title": "Claude (your login)" if CFG.get("llm_provider") == "claudecode" else "Claude API",
+            "detail": f"Minutes are written by {nice_model(CFG.get('claude_model', ''))}. Speech recognition and audio stay on this Mac.",
             "ok": bool(claude_code_path()) if CFG.get("llm_provider") == "claudecode" else bool(claude_key()), "action": None, "size": 0, "optional": False}] if use_claude() else [
         {"id": "ollama", "title": "Language engine", "detail": "Ollama runs the minutes-writing model on this Mac.",
          "ok": bool(ollama), "action": "tools", "size": 0.2, "needs_brew": True},
@@ -619,6 +620,11 @@ def suppress_bleed(mic: Path, system: Path, out: Path):
 def ts(sec): return f"{int(sec // 3600):02d}:{int(sec % 3600 // 60):02d}:{int(sec % 60):02d}"
 
 # ---------- the writing engine: this Mac (Ollama) or, optionally, the Claude API ----------
+def nice_model(m: str) -> str:
+    """claude-opus-5-5 -> Claude Opus 5.5"""
+    p = m.split("-")
+    return f"Claude {p[1].title()} {'.'.join(p[2:])}" if len(p) >= 3 and p[0] == "claude" else (m or "Claude")
+
 CLAUDE_URL = os.environ.get("MINUTE_CLAUDE_BASE", "https://api.anthropic.com") + "/v1/messages"
 CLAUDE_VERSION = "2026-10-21"
 

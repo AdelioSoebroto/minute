@@ -185,14 +185,29 @@ struct MinutesPaper: View {
     }
 }
 
-/// Grey desk with the page centred on it, like a document viewer.
+struct PaperSizeKey: PreferenceKey {
+    static var defaultValue: CGSize { .zero }
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+/// Grey desk with the page centred on it, like a document viewer. When the pane is narrower than the page,
+/// the page is scaled down to fit (like Preview's zoom to fit) instead of being cut off.
 struct PaperDesk<Content: View>: View {
     @ViewBuilder let content: Content
+    @State private var natural: CGSize = .zero
     var body: some View {
-        ScrollView {
-            content.padding(.vertical, 28).frame(maxWidth: .infinity)
+        GeometryReader { geo in
+            let s = natural.width > 0 ? min(1, max(0.5, (geo.size.width - 32) / natural.width)) : 1
+            ScrollView {
+                content.fixedSize(horizontal: false, vertical: true)
+                    .background(GeometryReader { g in Color.clear.preference(key: PaperSizeKey.self, value: g.size) })
+                    .scaleEffect(s, anchor: .top)
+                    .frame(width: natural == .zero ? nil : natural.width * s, height: natural == .zero ? nil : natural.height * s, alignment: .top)
+                    .padding(.vertical, 28).frame(maxWidth: .infinity)
+            }
+            .defaultScrollAnchor(.top)
         }
-        .defaultScrollAnchor(.top)
+        .onPreferenceChange(PaperSizeKey.self) { natural = $0 }
         .background(Color(nsColor: .underPageBackgroundColor))
         .softScrollEdges()
     }
@@ -506,6 +521,7 @@ struct LibraryView: View {
                     } label: {
                         Label("Filter", systemImage: scope == 0 ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
                     }
+                    .accessibilityLabel("Filter meetings")
                     .help(scope == 0 ? "Filter meetings" : "Showing \(["", "this week", "drafts", "exported"][scope]); click to change")
                 }
             }

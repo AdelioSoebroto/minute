@@ -59,7 +59,7 @@ struct TemplatePicker: View {
     var showSkip = false
     var onDone: () -> Void
 
-    @State private var kind: Kind = .clean
+    @State private var kind: Kind = TemplateProfile.current.generic ? .clean : .mine
     @State private var docx: URL?
     @State private var logo: URL?
     @State private var org = ""

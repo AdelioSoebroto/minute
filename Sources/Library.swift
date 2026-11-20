@@ -464,7 +464,11 @@ struct LibraryView: View {
         .safeAreaInset(edge: .top, spacing: 0) { CrashBanner(s: Stability.shared) }
         .sheet(isPresented: $showWhatsNew) { WhatsNewView { AppInfo.markWhatsNewSeen(); showWhatsNew = false } }
         .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in showWhatsNew = true }
-        .onReceive(NotificationCenter.default.publisher(for: .openMeeting)) { n in if let u = n.object as? URL { selection = u } }
+        .onReceive(NotificationCenter.default.publisher(for: .openMeeting)) { n in
+            guard let u = n.object as? URL else { return }
+            lib.refresh()
+            selection = lib.meetings.first { $0.dir.standardizedFileURL.path == u.standardizedFileURL.path }?.id ?? u
+        }
         .onChange(of: lib.meetings) { _, m in SpotlightIndex.update(m) }
         .onAppear {
             if AppInfo.shouldShowWhatsNew() { showWhatsNew = true }

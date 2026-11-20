@@ -138,6 +138,11 @@ enum Links {
         switch host {
         case "start": if !r.isRecording && !r.isBusy { MinuteApp.confirmToggle(r, then: showRecorder) }
         case "stop": if r.isRecording { MinuteApp.confirmToggle(r, then: showRecorder) }
+        case "meeting":     // minute://meeting?path=/full/folder opens that meeting in the library
+            showLibrary()
+            if let p = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "path" })?.value {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NotificationCenter.default.post(name: .openMeeting, object: URL(fileURLWithPath: p)) }
+            }
         case "flag":
             let kind = MarkKind(rawValue: url.pathComponents.dropFirst().first ?? "") ?? .important
             r.addMark(kind)

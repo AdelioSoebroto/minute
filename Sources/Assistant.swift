@@ -39,7 +39,7 @@ final class AssistantChat: ObservableObject {
                let j = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(7).utf8)) as? [String: Any] {
                 let changed = j["changed"] as? Bool ?? false
                 messages.append(ChatMessage(role: "assistant", text: j["reply"] as? String ?? "", changed: changed))
-                if changed { canUndo = true; editor.load(); Haptic.confirm(); then() }
+                if changed { canUndo = true; editor.load(); then() }
             } else {
                 messages.append(ChatMessage(role: "assistant", text: "Couldn't answer: " + (out.split(separator: "\n").last.map(String.init) ?? out)))
             }
@@ -77,10 +77,9 @@ struct AssistantPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("Claude", systemImage: "sparkles").font(.callout.weight(.semibold))
-                Text(engine).font(.caption).foregroundStyle(.secondary)
+                Label("Claude", systemImage: "sparkles").font(.headline)
                 Spacer()
-                Button { close() } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).foregroundStyle(.secondary).accessibilityLabel("Close")
+                Text(engine).font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 14).padding(.vertical, 10)
             Divider()
             ScrollViewReader { proxy in
@@ -108,8 +107,7 @@ struct AssistantPanel: View {
             .padding(.horizontal, 12).padding(.vertical, 9).glass(RoundedRectangle(cornerRadius: 16), interactive: true)
             .padding(10)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { focused = true }
+                .onAppear { focused = true }
         .onExitCommand { close() }
     }
 

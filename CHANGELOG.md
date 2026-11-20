@@ -3,6 +3,24 @@
 All notable changes to Minute. The newest version is first. Each release lists what is **new**, what was **improved** and what was **fixed**; the app shows
 the current version's notes once after an update (Help > What's New). Format follows [Keep a Changelog](https://keepachangelog.com), versions follow [SemVer](https://semver.org).
 
+## [1.3.0] - 2026-11-20
+
+### New
+- **A native Mac layout for meetings**: the title and date sit in the window toolbar. The view switch (Transcript and Minutes / Minutes / Transcript), Share, Export, More and Claude are standard toolbar buttons, and Claude opens as a standard inspector panel on the right. The custom button bar at the bottom is gone; progress and errors show as a thin line under the toolbar.
+- **Menu bar commands**: File › Export Word & PDF (⌘E). View › Transcript and Minutes / Minutes / Transcript (⌘1–⌘3) and Show Claude (⌘K). A new **Meeting** menu has Tidy Up Wording, Rewrite Minutes…, Open in Word, Open PDF, Show in Finder (⌥⌘R) and Move to Bin… (⌘⌫).
+- **Right-click menus** on transcript lines (Play from Here, Copy Line, Remove Line), topics (Show Where This Was Said, Copy Topic, Remove Topic) and meetings (Open PDF, Open in Word, Show in Finder, Move to Bin).
+- **Settings in tabs** like other Mac apps: General, Recording, AI, Template, Storage and This Mac. Each option's explanation now sits under it as a subtitle.
+
+### Improved
+- **Recording is one click**, like Voice Memos and QuickTime: a red record button. Stop works like Clear All in Notification Center: the first click turns it into a red "Stop" and the second click stops, so a stray click still can't end a meeting.
+- **Haptics follow macOS**: trackpad feedback is no longer played on ordinary clicks or when steps change; macOS keeps haptics for dragging and snapping. The error sound is unchanged.
+- Controls appear on hover, as in Mac lists: the play button on a transcript line (like track numbers in Music), and the remove and "show where this was said" buttons on topics. They no longer clutter every row.
+- The library's filter is a standard filter button in the sidebar toolbar instead of a cramped four-way switch. Meeting rows show their status (Draft, Exported…).
+- Clearer icons: Tidy Up uses a magic wand (no longer the same sparkles as Claude), "show where this was said" uses a quote bubble, and Export uses a document with an up arrow.
+
+### Fixed
+- The "show where this was said" button on topics was missing from past meetings; it's back.
+
 ## [1.2.1] - 2026-11-20
 
 ### Improved

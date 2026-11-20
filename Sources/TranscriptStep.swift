@@ -63,6 +63,7 @@ struct TranscriptPane: View {
     /// Read once when the pane appears, not for every row on every keystroke.
     @State private var invitees: [String] = []
     @State private var canPlay = false
+    @State private var hovered: UUID?
     private static func loadInvitees(_ dir: URL?) -> [String] {
         guard let dir, let d = try? Data(contentsOf: dir.appendingPathComponent("meeting.json")),
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [] }
@@ -108,7 +109,7 @@ struct TranscriptPane: View {
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(TLine.serialize(lines), forType: .string)
-                    Haptic.tick(); copied = true
+                    copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }.glassButton().help("Copy the transcript").accessibilityLabel("Copy the transcript")
             }
@@ -219,10 +220,12 @@ struct TranscriptPane: View {
     private func row(_ l: Binding<TLine>, at idx: Int, known: [String]) -> some View {
         let line = l.wrappedValue
         let next = idx + 1 < lines.count ? lines[idx + 1] : nil
+        let playing = playback.playingID == line.id, hover = hovered == line.id
         return HStack(alignment: .top, spacing: 8) {
-            Button { Haptic.tick(); playback.toggle(line, next: next, in: dir) } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: playback.playingID == line.id ? "pause.fill" : "play.fill").font(.system(size: 9))
+            Button { playback.toggle(line, next: next, in: dir) } label: {
+                HStack(spacing: 4) {     // like Music: the play glyph appears on hover
+                    Image(systemName: playing ? "pause.fill" : "play.fill").font(.system(size: 9))
+                        .opacity(canPlay && (hover || playing) ? 1 : 0)
                     Text(line.time).font(.caption.monospacedDigit())
                 }
                 .foregroundStyle(playback.playingID == line.id ? Color.accentColor : .secondary)
@@ -232,8 +235,17 @@ struct TranscriptPane: View {
             .accessibilityLabel(canPlay ? "Play from \(line.time)" : "Time \(line.time)")
             speakerMenu(line, known: known)
             TextField("", text: l.text, axis: .vertical).textStyle().font(.callout).accessibilityLabel("Transcript, \(line.speaker), \(line.time)")
-            Button { remove(line) } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary) }
+            Button { remove(line) } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.secondary) }
                 .buttonStyle(.borderless).help("Remove this line").accessibilityLabel("Remove this line")
+                .opacity(hover ? 1 : 0)
+        }
+        .contentShape(Rectangle())
+        .onHover { inside in if inside { hovered = line.id } else if hovered == line.id { hovered = nil } }
+        .contextMenu {
+            if canPlay { Button(playing ? "Stop Playing" : "Play from Here") { playback.toggle(line, next: next, in: dir) } }
+            Button("Copy Line") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString("[\(line.time)] \(line.speaker): \(line.text)", forType: .string) }
+            Divider()
+            Button("Remove Line", role: .destructive) { remove(line) }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -243,7 +255,6 @@ struct TranscriptPane: View {
 
     private func remove(_ line: TLine) {
         guard let at = lines.firstIndex(where: { $0.id == line.id }) else { return }
-        Haptic.tick()
         withAnimation(.spring(duration: 0.3)) { _ = lines.remove(at: at) }
         let binding = $lines
         undo?.registerUndo(withTarget: UndoBox.shared) { _ in withAnimation { binding.wrappedValue.insert(line, at: min(at, binding.wrappedValue.count)) } }

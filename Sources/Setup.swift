@@ -412,33 +412,84 @@ struct SettingsView: View {
 
     var changed: Bool { choice.standardizedFileURL.path != Storage.root.standardizedFileURL.path }
 
+    /// Native toggle: the title, with the explanation as its subtitle underneath.
+    private func toggle(_ title: String, _ detail: String, _ on: Binding<Bool>) -> some View {
+        Toggle(isOn: on) { Text(title); Text(detail) }
+    }
+
     var body: some View {
+        TabView {
+            general.tabItem { Label("General", systemImage: "gearshape") }
+            recording.tabItem { Label("Recording", systemImage: "waveform") }
+            ai.tabItem { Label("AI", systemImage: "sparkles") }
+            template.tabItem { Label("Template", systemImage: "doc.richtext") }
+            storage.tabItem { Label("Storage", systemImage: "externaldrive") }
+            thisMac.tabItem { Label("This Mac", systemImage: "laptopcomputer") }
+        }
+        .frame(width: 620)
+        .onAppear { choice = Storage.root; count = Storage.meetingFolders(in: Storage.root).count }
+    }
+
+    private var general: some View {
         Form {
             Section {
-                LabeledContent("Current location") {
-                    Text(Storage.root.path.replacingOccurrences(of: home.path, with: "~")).textSelection(.enabled).foregroundStyle(.secondary)
-                }
-                LabeledContent("Meetings") { Text("\(count)").foregroundStyle(.secondary) }
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([Storage.root]) }
-            } header: { Text("Storage") }
-
+                Toggle("Open Minute when I log in", isOn: $openAtLogin).onChange(of: openAtLogin) { _, v in Login.set(v); openAtLogin = Login.enabled }
+                toggle("Show my meetings in Spotlight", "Titles and the first topics, kept on this Mac only. Off by default because minutes can be confidential.", $spotlight)
+                    .onChange(of: spotlight) { _, v in SpotlightIndex.enabled = v; SpotlightIndex.update(lib.meetings) }
+            }
             Section {
-                LocationPicker(selection: $choice)
-                if changed {
-                    Text("All \(count) existing meeting\(count == 1 ? "" : "s") will move to the new location, so everything stays in one place.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    HStack {
-                        if mover.busy { ProgressView(value: mover.progress).frame(width: 140); Text(mover.status).font(.caption).foregroundStyle(.secondary) }
-                        Spacer()
-                        Button("Move Everything Here") {
-                            mover.change(to: choice) { ok in if ok { lib.refresh(); count = Storage.meetingFolders(in: Storage.root).count } }
-                        }.glassButton(prominent: true).disabled(mover.busy || r.isRecording || r.isBusy)
-                    }
-                }
-                if let e = mover.error { Text(e).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-                if r.isRecording || r.isBusy { Text("Finish the current recording before moving the library.").font(.caption).foregroundStyle(.orange) }
-            } header: { Text("Change location") }
+                Picker("Write the minutes in", selection: $language) {
+                    Text("The language of the meeting").tag("auto"); Text("Bahasa Indonesia").tag("id"); Text("English").tag("en")
+                }.onChange(of: language) { _, v in Storage.writeConfig(["mom_language": v]) }
+            } footer: { Text("The transcript stays in the language that was spoken. Names, products and English technical terms are kept as said.").font(.caption).foregroundStyle(.secondary) }
+            Section {
+                TextEditor(text: $terms).font(.system(.callout, design: .monospaced)).frame(height: 130)
+                    .scrollContentBackground(.hidden)
+                    .onChange(of: terms) { _, v in try? v.write(to: home.appendingPathComponent(".mom/terms.txt"), atomically: true, encoding: .utf8) }
+            } header: { Text("Names & terms") } footer: { Text("One per line: a client, a product, a cafe. Minute also learns the words you fix in a transcript. To force a spelling write: heard = correct").font(.caption).foregroundStyle(.secondary) }
+        }
+        .formStyle(.grouped).frame(height: 470)
+    }
 
+    private var recording: some View {
+        Form {
+            Section("Microphone") {
+                toggle("Clean up my microphone in online meetings", "Removes meeting audio echoing from your speakers and background noise. Onsite recordings are left as they are, so everyone in the room is heard.", $voiceProc)
+                    .onChange(of: voiceProc) { _, v in MicRecorder.voiceProcessing = v }
+                LabeledContent("Mic mode") {
+                    Button("Mic Modes…") { AVCaptureDevice.showSystemUserInterface(.microphoneModes) }.help("Choose Voice Isolation to keep only your voice")
+                }
+                toggle("Pause my microphone while I'm muted", "For apps that let go of the mic when you mute (most do). Everyone else still comes through the meeting audio.", $muteGate)
+                    .onChange(of: muteGate) { _, v in Recorder.muteGate = v }
+            }
+            Section("During online meetings") {
+                toggle("Show a floating control", "Appears when Teams, Zoom, Meet, Webex or similar uses your microphone: one click to record, two to stop. Hidden from screen sharing.", $floating)
+                    .onChange(of: floating) { _, v in FloatingControl.enabled = v }
+                toggle("Read shared screens for context", "Text on the meeting window (slides, documents) is read on this Mac and given to the minutes writer. Nothing is uploaded.", $readScreens)
+                    .onChange(of: readScreens) { _, v in ScreenContext.enabled = v }
+                Toggle("Keep a small picture of each shared screen", isOn: $thumbs).onChange(of: thumbs) { _, v in ScreenContext.keepThumbnails = v }.disabled(!readScreens)
+                if readScreens && !ScreenContext.permitted {
+                    Label("Screen Recording is off for Minute. Turn it on in System Settings > Privacy & Security.", systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                }
+                Toggle("Use my calendar to name meetings", isOn: $useCalendar).onChange(of: useCalendar) { _, v in CalendarContext.enabled = v }
+            }
+        }
+        .formStyle(.grouped).frame(height: 520)
+    }
+
+    private var ai: some View {
+        Form {
+            AIEngineSection()
+            Section {
+                toggle("Proofread transcripts with Claude", "Corrects misheard words using the conversation, your names list and what was on screen, before the minutes are written. The raw transcript is kept as transcript.raw.md.", $proofread)
+                    .onChange(of: proofread) { _, v in Storage.writeConfig(["ai_proofread": v]) }
+            }
+        }
+        .formStyle(.grouped).frame(height: 560)
+    }
+
+    private var template: some View {
+        Form {
             Section {
                 let tp = TemplateProfile.current
                 LabeledContent("Current template") { Text(tp.generic ? "Clean template" : "Your Word template").foregroundStyle(.secondary) }
@@ -446,75 +497,65 @@ struct SettingsView: View {
                     LabeledContent("Logo") { Image(nsImage: logo).resizable().scaledToFit().frame(height: 28) }
                 }
                 TemplatePicker { tplVersion += 1 }.id(tplVersion)
-            } header: { Text("Template") }
+            }
+        }
+        .formStyle(.grouped).frame(height: 460)
+    }
 
-            AIEngineSection()
-
+    private var storage: some View {
+        Form {
+            Section("Meetings folder") {
+                LabeledContent("Location") {
+                    Text(Storage.root.path.replacingOccurrences(of: home.path, with: "~")).textSelection(.enabled).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+                }
+                LabeledContent("Meetings") { Text("\(count)").foregroundStyle(.secondary) }
+                LabeledContent("") { Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([Storage.root]) } }
+            }
+            Section("Change location") {
+                LocationPicker(selection: $choice)
+                if changed {
+                    Text("All \(count) meeting\(count == 1 ? "" : "s") will move to the new location, so everything stays in one place.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    HStack {
+                        if mover.busy { ProgressView(value: mover.progress).frame(width: 140); Text(mover.status).font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                        Button("Move Everything Here") {
+                            mover.change(to: choice) { ok in if ok { lib.refresh(); count = Storage.meetingFolders(in: Storage.root).count } }
+                        }.buttonStyle(.borderedProminent).disabled(mover.busy || r.isRecording || r.isBusy)
+                    }
+                }
+                if let e = mover.error { Text(e).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+                if r.isRecording || r.isBusy { Text("Finish the current recording before moving the library.").font(.caption).foregroundStyle(.orange) }
+            }
             Section {
-                Picker("Write the minutes in", selection: $language) {
-                    Text("The language of the meeting").tag("auto"); Text("Bahasa Indonesia").tag("id"); Text("English").tag("en")
-                }.onChange(of: language) { _, v in Storage.writeConfig(["mom_language": v]) }
-                Text("The transcript stays in the language that was spoken. Names, products and English technical terms are kept as said.").font(.caption).foregroundStyle(.secondary)
-            } header: { Text("Minutes") }
-
+                toggle("Delete recordings after the minutes are exported", "Keeps the transcript and minutes only. Useful when the folder syncs to the cloud.", $deleteAudio)
+                    .onChange(of: deleteAudio) { _, v in Storage.deleteAudio = v }
+            }
             Section {
                 HStack {
-                    Button(backup.busy ? "Backing up…" : "Back Up Meetings…") { backup.run(include: backup.includeAudio) }.disabled(backup.busy || r.isRecording)
+                    Button(backup.busy ? "Backing Up…" : "Back Up Meetings…") { backup.run(include: backup.includeAudio) }.disabled(backup.busy || r.isRecording)
                     Toggle("Include recordings", isOn: $backup.includeAudio).toggleStyle(.checkbox).disabled(backup.busy)
                     if backup.busy { ProgressView().controlSize(.small) }
                 }
                 if let m = backup.message { Text(m).font(.caption).foregroundStyle(backup.failed ? Color.red : .secondary).fixedSize(horizontal: false, vertical: true) }
-                Text("Saves one zip of every meeting (transcripts, minutes, Word and PDF) wherever you choose. Recordings make it much larger.").font(.caption).foregroundStyle(.secondary)
-            } header: { Text("Backup") }
-
-            Section { ReadyStep() } header: { Text("This Mac") }
-
-            Section {
-                TextEditor(text: $terms).font(.system(.callout, design: .monospaced)).frame(height: 110)
-                    .scrollContentBackground(.hidden).padding(6)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-                    .onChange(of: terms) { _, v in try? v.write(to: home.appendingPathComponent(".mom/terms.txt"), atomically: true, encoding: .utf8) }
-                Text("Minute already knows common Indonesian brands, restaurants, places and work terms, and learns from the words you fix in a transcript. Add your own here, one per line, for example a client, a product or a cafe. To force a spelling write: heard = correct").font(.caption).foregroundStyle(.secondary)
-            } header: { Text("Names & terms") }
-
-            Section {
-                Toggle("Delete recordings after the minutes are exported", isOn: $deleteAudio)
-                    .onChange(of: deleteAudio) { _, v in Storage.deleteAudio = v }
-                Text("Keeps the transcript and minutes only. Useful when the folder syncs to the cloud.").font(.caption).foregroundStyle(.secondary)
-            } header: { Text("Privacy") }
-
-            Section {
-                Toggle("Clean up my microphone in online meetings (voice processing)", isOn: $voiceProc).onChange(of: voiceProc) { _, v in MicRecorder.voiceProcessing = v }
-                HStack {
-                    Text("Removes the meeting audio echoing from your speakers and background noise, so your words transcribe cleanly. Onsite recordings are never processed, so everyone in the room is heard.").font(.caption).foregroundStyle(.secondary)
-                    Button("Mic Modes…") { AVCaptureDevice.showSystemUserInterface(.microphoneModes) }.help("Choose Voice Isolation to keep only your voice")
-                }
-                Toggle("Proofread transcripts with Claude", isOn: $proofread).onChange(of: proofread) { _, v in Storage.writeConfig(["ai_proofread": v]) }
-                Text("When Claude is the AI engine, it corrects misheard words in the transcript using the conversation, your names list and what was on screen, before the minutes are written. Timestamps and meaning stay; the raw transcript is kept as transcript.raw.md.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Pause my microphone while I'm muted in the meeting", isOn: $muteGate).onChange(of: muteGate) { _, v in Recorder.muteGate = v }
-                Text("For online meetings only. Works with meeting apps that let go of the microphone when you mute (most do); if yours keeps it open, Minute records as usual. Everyone else still comes through the meeting audio.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Open Minute when I log in", isOn: $openAtLogin).onChange(of: openAtLogin) { _, v in Login.set(v); openAtLogin = Login.enabled }
-                Toggle("Show my meetings in Spotlight", isOn: $spotlight).onChange(of: spotlight) { _, v in SpotlightIndex.enabled = v; SpotlightIndex.update(lib.meetings) }
-                Text("Spotlight keeps titles and the first topics on this Mac only. Off by default because minutes can be confidential.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Show a floating control during online meetings", isOn: $floating).onChange(of: floating) { _, v in FloatingControl.enabled = v }
-                Text("A small pill appears when Teams, Zoom, Meet, Webex or similar is using your microphone, with hold-to-record and hold-to-stop. It is hidden from screen sharing.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Read shared screens for context", isOn: $readScreens).onChange(of: readScreens) { _, v in ScreenContext.enabled = v }
-                Text("While recording an online meeting, Minute reads the text on the meeting window (slides, documents) on this Mac and gives it to the minutes writer. Nothing is uploaded.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Keep a small picture of each shared screen", isOn: $thumbs).onChange(of: thumbs) { _, v in ScreenContext.keepThumbnails = v }.disabled(!readScreens)
-                if readScreens && !ScreenContext.permitted {
-                    Label("Screen Recording is not allowed yet. Turn it on for Minute in System Settings > Privacy & Security.", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                }
-                Toggle("Use my calendar to name meetings", isOn: $useCalendar).onChange(of: useCalendar) { _, v in CalendarContext.enabled = v }
-            } header: { Text("Online meetings") }
-
-            Section {
-                Button(r.diagnosticsCopied ? "Copied to the Clipboard" : "Copy Diagnostics") { r.copyDiagnostics() }
-                Text("Copies the app and Mac details and the latest log lines (your name and home folder are removed) so you can paste them in a message when something goes wrong.").font(.caption).foregroundStyle(.secondary)
-                Button("Welcome Tour & Setup…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) }
-            } header: { Text("Help") }
+            } header: { Text("Backup") } footer: { Text("One zip of every meeting (transcripts, minutes, Word and PDF), saved wherever you choose. Recordings make it much larger.").font(.caption).foregroundStyle(.secondary) }
         }
-        .formStyle(.grouped).frame(width: 580, height: 860)
-        .onAppear { choice = Storage.root; count = Storage.meetingFolders(in: Storage.root).count }
+        .formStyle(.grouped).frame(height: 600)
+    }
+
+    private var thisMac: some View {
+        Form {
+            Section { ReadyStep() }
+            Section("Help") {
+                LabeledContent {
+                    Button(r.diagnosticsCopied ? "Copied" : "Copy Diagnostics") { r.copyDiagnostics() }
+                } label: {
+                    Text("Diagnostics"); Text("App and Mac details and recent log lines, with your name and home folder removed, to paste in a message.")
+                }
+                LabeledContent("Tour") { Button("Welcome Tour & Setup…") { openWindow(id: "setup"); NSApp.activate(ignoringOtherApps: true) } }
+            }
+        }
+        .formStyle(.grouped).frame(height: 560)
     }
 }
 

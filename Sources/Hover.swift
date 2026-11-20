@@ -126,14 +126,14 @@ struct FloatingView: View {
             Circle().fill(.red).frame(width: 10, height: 10).opacity(pulse ? 0.35 : 1).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(clock(live.elapsed)).font(.system(size: 17, weight: .medium, design: .rounded)).monospacedDigit()
-                Text(ended ? "Meeting ended? Hold to stop" : r.warning != nil ? "Check audio" : r.micPaused ? "Recording · mic paused (muted)" : "Recording · \(r.mode.rawValue)")
+                Text(ended ? "Meeting ended? Click stop" : r.warning != nil ? "Check audio" : r.micPaused ? "Recording · mic paused (muted)" : "Recording · \(r.mode.rawValue)")
                     .font(.caption2).foregroundStyle(ended || r.warning != nil ? Color.orange : .secondary)
             }
             Waveform(samples: Array(live.history.suffix(18))).frame(width: 54, height: 22)
             FlagMenu(r: r)
             Button { openApp() } label: { Image(systemName: "arrow.up.forward.app") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary).help("Open Minute").accessibilityLabel("Open Minute")
-            HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: ended ? .red : .primary, seconds: 1.5, size: 40, showTitle: false) { r.stop(); openApp() }
+            RoundButton(title: "Stop recording", symbol: "stop.fill", tint: ended ? .red : .primary, size: 40, showTitle: false, confirm: "Stop") { r.stop(); openApp() }
         }
     }
 
@@ -147,7 +147,7 @@ struct FloatingView: View {
                 Text("Not recording").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 6)
-            HoldButton(title: "Hold to record", symbol: "mic.fill", tint: .red, seconds: 0.8, size: 40, showTitle: false) { r.mode = .online; r.start() }
+            RoundButton(title: "Record", symbol: "circle.fill", tint: .red, size: 40, showTitle: false) { r.mode = .online; r.start() }
             Button { dismiss() } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).foregroundStyle(.tertiary).help("Hide until the next meeting").accessibilityLabel("Hide")
         }

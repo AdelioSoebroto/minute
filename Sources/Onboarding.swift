@@ -52,7 +52,6 @@ final class Readiness: ObservableObject {
         busy = nil
         await refresh()
         if code != 0 { error = tail; return false }
-        Haptic.confirm()
         return true
     }
 
@@ -217,12 +216,12 @@ struct TourPages: View {
     }
 
     private var holdPage: some View {
-        page("Hold to record", "Press and hold the red button to start, and hold the stop button to finish. The hold keeps a stray click from ending your meeting.") {
+        page("One click to record", "Click the red button to start. To finish, click stop and then Stop again, so a stray click can never end your meeting.") {
             VStack(spacing: 14) {
-                HoldButton(title: "Hold to try", symbol: tried ? "checkmark" : "mic.fill", tint: tried ? .green : .red, seconds: 0.8, size: 96, showTitle: false) {
+                RoundButton(title: "Try it", symbol: tried ? "checkmark" : "circle.fill", tint: tried ? .green : .red, size: 96, showTitle: false) {
                     withAnimation(.spring) { tried = true }
                 }
-                Text(tried ? "That's all it takes." : "Try it. Hold the button.").font(.callout).foregroundStyle(.secondary).contentTransition(.opacity)
+                Text(tried ? "That's all it takes." : "Try it. Click the button.").font(.callout).foregroundStyle(.secondary).contentTransition(.opacity)
                 Label("Minute stays in your menu bar", systemImage: "menubar.rectangle").font(.caption).foregroundStyle(.tertiary)
             }
         }

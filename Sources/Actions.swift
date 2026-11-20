@@ -74,7 +74,7 @@ struct OpenItemsView: View {
                         Section {
                             ForEach(its) { i in
                                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                    Button { Haptic.tick(); withAnimation(.snappy) { tracker.toggle(i) } } label: {
+                                    Button { withAnimation(.snappy) { tracker.toggle(i) } } label: {
                                         Image(systemName: tracker.isDone(i) ? "checkmark.circle.fill" : "circle").font(.title3)
                                             .foregroundStyle(tracker.isDone(i) ? Color.green : .secondary)
                                     }.buttonStyle(.plain).accessibilityLabel(tracker.isDone(i) ? "Mark as not done" : "Mark as done")

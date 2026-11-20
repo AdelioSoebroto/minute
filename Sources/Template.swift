@@ -129,7 +129,7 @@ struct TemplatePicker: View {
     }
 
     private func choice(_ symbol: String, _ title: String, _ detail: String, _ k: Kind) -> some View {
-        Button { Haptic.tick(); kind = k } label: {
+        Button { kind = k } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Image(systemName: symbol).font(.title2).foregroundStyle(Color.accentColor).symbolRenderingMode(.hierarchical)
@@ -174,7 +174,7 @@ struct TemplatePicker: View {
         .buttonStyle(.plain)
         .dropDestination(for: URL.self) { urls, _ in
             guard let u = urls.first(where: { types.contains($0.pathExtension.lowercased()) }) else { return false }
-            Haptic.tick(); set(u); return true
+            set(u); return true
         } isTargeted: { targeted = $0 }
     }
 
@@ -195,7 +195,6 @@ struct TemplatePicker: View {
             busy = false
             if code == 0, let line = out.split(separator: "\n").last(where: { $0.hasPrefix("TEMPLATE ") }),
                let d = line.dropFirst(9).data(using: .utf8), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                Haptic.tick()
                 found = Found(slots: j["found"] as? [String] ?? [], org: j["org"] as? String ?? "", topics: j["topics"] as? Bool ?? true)
             }
             else { error = out.split(separator: "\n").last.map(String.init) ?? "Could not read this template." }

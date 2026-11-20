@@ -77,6 +77,7 @@ struct MinutesPaper: View {
     var onJump: ((String) -> Void)? = nil
 
     private let w: CGFloat = 560
+    @State private var hovered: UUID?
     @Environment(\.undoManager) private var undo
     private var prof: TemplateProfile { TemplateProfile.current }
     private let line = Color.black
@@ -96,6 +97,14 @@ struct MinutesPaper: View {
 
     private func cell<C: View>(_ width: CGFloat, @ViewBuilder _ content: () -> C) -> some View {
         content().frame(width: width).frame(maxHeight: .infinity, alignment: .top).overlay(Rectangle().stroke(line, lineWidth: 0.6))
+    }
+
+    private func removeTopic(at i: Int) {
+        guard topics.indices.contains(i) else { return }
+        let removed = topics[i], binding = $topics
+        withAnimation(.snappy) { _ = topics.remove(at: i) }
+        undo?.registerUndo(withTarget: UndoBox.shared) { _ in withAnimation { binding.wrappedValue.insert(removed, at: min(i, binding.wrappedValue.count)) } }
+        undo?.setActionName("Remove Topic")
     }
 
     var body: some View {
@@ -137,26 +146,31 @@ struct MinutesPaper: View {
                             TextField("Describe the topic", text: $topics[i].text, axis: .vertical).textFieldStyle(.plain)
                                 .font(PaperAssets.font(12)).padding(.horizontal, 6).padding(.vertical, 4)
                                 .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.07)))
-                            if let jump = onJump {
-                                Button { jump(t.text) } label: { Image(systemName: "text.quote").foregroundStyle(Color.accentColor) }
-                                    .buttonStyle(.borderless).help("Show where this was said").accessibilityLabel("Show where topic \(i + 1) was said")
-                            }
-                            Button {
-                                Haptic.tick()
-                                let removed = topics[i], at = i, binding = $topics
-                                withAnimation(.spring(duration: 0.3)) { _ = topics.remove(at: i) }
-                                undo?.registerUndo(withTarget: UndoBox.shared) { _ in withAnimation { binding.wrappedValue.insert(removed, at: min(at, binding.wrappedValue.count)) } }
-                                undo?.setActionName("Remove Topic")
-                            } label: {
-                                Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
-                            }.buttonStyle(.borderless).help("Remove topic").accessibilityLabel("Remove topic \(i + 1)")
+                            Group {       // shown on hover, like controls in a Mac list
+                                if let jump = onJump {
+                                    Button { jump(t.text) } label: { Image(systemName: "quote.bubble").foregroundStyle(Color.accentColor) }
+                                        .buttonStyle(.borderless).help("Show where this was said").accessibilityLabel("Show where topic \(i + 1) was said")
+                                }
+                                Button { removeTopic(at: i) } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.secondary) }
+                                    .buttonStyle(.borderless).help("Remove topic").accessibilityLabel("Remove topic \(i + 1)")
+                            }.opacity(hovered == t.id ? 1 : 0)
                         } else {
                             Text(t.text).font(PaperAssets.font(12)).fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    .contentShape(Rectangle())
+                    .onHover { inside in if inside { hovered = t.id } else if hovered == t.id { hovered = nil } }
+                    .contextMenu {
+                        if editable {
+                            if let jump = onJump { Button("Show Where This Was Said") { jump(t.text) } }
+                            Button("Copy Topic") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(t.text, forType: .string) }
+                            Divider()
+                            Button("Remove Topic", role: .destructive) { removeTopic(at: i) }
+                        }
+                    }
                 }
                 if editable {
-                    Button { Haptic.tick(); withAnimation(.spring(duration: 0.3)) { topics.append(Topic(text: "")) } } label: {
+                    Button { withAnimation(.spring(duration: 0.3)) { topics.append(Topic(text: "")) } } label: {
                         Label("Add topic", systemImage: "plus.circle.fill").font(.callout)
                     }.buttonStyle(.borderless).padding(.leading, 30)
                 }
@@ -331,9 +345,9 @@ struct RecordCard: View {
                 Picker("Mode", selection: $r.mode) { ForEach(Mode.allCases) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
                 HStack(spacing: 12) {
-                    HoldButton(title: "Hold to record", symbol: "mic.fill", tint: .red, seconds: 0.8, size: 58, showTitle: false) { r.start() }
+                    RoundButton(title: "Record", symbol: "circle.fill", tint: .red, size: 58, showTitle: false) { r.start() }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Hold to record").font(.callout.weight(.semibold))
+                        Text("Record").font(.callout.weight(.semibold))
                         Text(r.mode.hint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
@@ -345,13 +359,13 @@ struct RecordCard: View {
                         Text(clock(live.elapsed)).font(.system(size: 30, weight: .light, design: .rounded)).monospacedDigit()
                     }
                     Spacer(minLength: 0)
-                    HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5, size: 58, showTitle: false) { r.stop(); showFlow() }
+                    RoundButton(title: "Stop recording", symbol: "stop.fill", tint: .primary, size: 58, showTitle: false, confirm: "Stop") { r.stop(); showFlow() }
                 }
                 Waveform(samples: live.history)
                 if let w = r.warning {
                     Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Hold the stop button to finish").font(.caption).foregroundStyle(.secondary)
+                Text("Click stop, then Stop again to finish").font(.caption).foregroundStyle(.secondary)
             default:
                 HStack(spacing: 10) {
                     if r.isBusy { ProgressView().controlSize(.small) }
@@ -459,8 +473,6 @@ struct LibraryView: View {
             VStack(spacing: 0) {
             RecordCard(r: r, live: r.live)
             ForEach(r.unfinished, id: \.self) { d in RecoveryCard(r: r, dir: d) }
-            Picker("Show", selection: $scope) { Text("All").tag(0); Text("This week").tag(1); Text("Drafts").tag(2); Text("Exported").tag(3) }
-                .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12).padding(.vertical, 6)
             List(selection: $selection) {
                 Section {
                     Label("Open items", systemImage: "checklist").tag(Self.openItemsID)
@@ -474,7 +486,7 @@ struct LibraryView: View {
             .onDeleteCommand { if let m = lib.meetings.first(where: { $0.id == selection }) { confirmDelete = m } }
             .overlay {
                 if lib.meetings.isEmpty {
-                    ContentUnavailableView("No meetings yet", systemImage: "waveform", description: Text("Hold the record button above when a meeting starts."))
+                    ContentUnavailableView("No meetings yet", systemImage: "waveform", description: Text("Click record above when a meeting starts."))
                 } else if shown.isEmpty {
                     if query.isEmpty { ContentUnavailableView("Nothing here", systemImage: "tray", description: Text("No meetings match this filter.")) }
                     else { ContentUnavailableView.search(text: query) }
@@ -482,6 +494,21 @@ struct LibraryView: View {
             }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { StorageFooter() }
+            .toolbar {
+                ToolbarItem {
+                    Menu {
+                        Picker("Show", selection: $scope) {
+                            Label("All Meetings", systemImage: "tray.full").tag(0)
+                            Label("This Week", systemImage: "calendar").tag(1)
+                            Label("Drafts", systemImage: "pencil.line").tag(2)
+                            Label("Exported", systemImage: "checkmark.circle").tag(3)
+                        }.pickerStyle(.inline)
+                    } label: {
+                        Label("Filter", systemImage: scope == 0 ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                    }
+                    .help(scope == 0 ? "Filter meetings" : "Showing \(["", "this week", "drafts", "exported"][scope]); click to change")
+                }
+            }
             .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
             if selection == Self.openItemsID { OpenItemsView(lib: lib, tracker: tracker) { selection = $0.id } }
@@ -511,15 +538,19 @@ struct LibraryView: View {
 
     func row(_ m: Meeting) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: m.hasPdf ? "doc.text.fill" : m.data != nil ? "pencil.line" : "waveform")
+            Image(systemName: m.hasPdf ? "doc.text.fill" : m.data != nil ? "doc.text" : "waveform")
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(m.hasPdf ? Color.accentColor : .secondary).frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(m.title).lineLimit(1).font(.body.weight(.medium))
-                Text(m.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                Text("\(m.date.formatted(date: .abbreviated, time: .shortened)) · \(m.status)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }.padding(.vertical, 2)
         .contextMenu {
+            if m.hasPdf, let f = exportedFile(in: m.dir, ext: "pdf") { Button("Open PDF") { NSWorkspace.shared.open(f) } }
+            if m.hasDocx, let f = exportedFile(in: m.dir, ext: "docx") { Button("Open in Word") { NSWorkspace.shared.open(f) } }
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([m.dir]) }
+            Divider()
             Button("Move to Bin…", role: .destructive) { confirmDelete = m }
         }
     }

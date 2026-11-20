@@ -335,7 +335,7 @@ final class Recorder: ObservableObject {
                 tap.stop(); segLog?.close(segURL(dir, "system", sysSeg).lastPathComponent, at: now)
                 sysSeg += 1; try tap.start(url: segURL(dir, "system", sysSeg)); segLog?.open(segURL(dir, "system", sysSeg).lastPathComponent, at: now)
             }
-            warning = nil; Haptic.generic()
+            warning = nil
         } catch {
             warning = "Audio device changed and recording could not follow: \(error.localizedDescription)"
         }
@@ -363,7 +363,7 @@ final class Recorder: ObservableObject {
     func addMark(_ kind: MarkKind) {
         guard isRecording, let dir = session else { return }
         marks.append(Mark(t: Int(elapsed), kind: kind)); Mark.save(marks, to: dir)
-        Haptic.confirm(); markFlash = kind
+        markFlash = kind
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in if self?.markFlash == kind { self?.markFlash = nil } }
     }
 
@@ -535,7 +535,7 @@ final class Recorder: ObservableObject {
                 Task { @MainActor in if thenExport, case .exporting = self.phase { self.phase = .exporting(st + "…") } }
             }
             tidying = false
-            if code == 0, loadDraft(dir) { canUndoTidy = !thenExport; if !thenExport { Haptic.confirm() } }
+            if code == 0, loadDraft(dir) { canUndoTidy = !thenExport; }
             if thenExport { runExport(dir) }
         }
     }
@@ -543,7 +543,7 @@ final class Recorder: ObservableObject {
     func undoTidy() {
         guard let d = preTidy else { return }
         withAnimation { apply(d) }
-        canUndoTidy = false; Haptic.generic()
+        canUndoTidy = false
     }
 
     // MARK: Step 3 - export
@@ -586,66 +586,77 @@ func clock(_ t: TimeInterval) -> String {
 
 // MARK: - Haptics
 
+/// macOS uses trackpad haptics only for direct manipulation (snapping, alignment, force click), never for ordinary clicks,
+/// so Minute only gives one where a drag snaps into place.
 enum Haptic {
-    static func tick() { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
-    static func confirm() { NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now) }
-    static func generic() { NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now) }
+    static func snap() { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
 }
 
 // MARK: - Shared components
 
-/// Only fires after being held, so an accidental click can't start or stop anything.
-/// Gives a soft haptic tick while you hold and a firm one when it commits.
-struct HoldButton: View {
+/// Pressed look for round controls: a slight dip, like a system button.
+struct PressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .brightness(configuration.isPressed ? -0.06 : 0)
+            .animation(.snappy(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+/// The round record / stop control. One click records. A stop control (`confirm` set) turns into a "Stop" capsule on the
+/// first click and acts on the second, like Clear All in Notification Center, so a stray click can't end a meeting.
+struct RoundButton: View {
     let title: String
     let symbol: String
     let tint: Color
-    let seconds: Double
     var size: CGFloat = 92
     var showTitle = true
+    var confirm: String? = nil
     let action: () -> Void
-    @State private var progress: CGFloat = 0
-    @State private var pressing = false
-    @State private var ticker: Timer?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var armed = false
+    @State private var disarm: DispatchWorkItem?
+    @State private var hover = false
+
+    private func tap() {
+        guard let _ = confirm, !armed else { disarm?.cancel(); armed = false; action(); return }
+        armed = true
+        let w = DispatchWorkItem { armed = false }
+        disarm = w; DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: w)
+    }
 
     var body: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Color.clear.glass(Circle(), tint: tint.opacity(pressing ? 0.35 : 0.18), interactive: true)
-                Circle().stroke(tint.opacity(0.22), lineWidth: size > 70 ? 4 : 3)
-                Circle().trim(from: 0, to: progress)
-                    .stroke(tint, style: StrokeStyle(lineWidth: size > 70 ? 4 : 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Image(systemName: symbol).font(.system(size: size * 0.33, weight: .medium)).foregroundStyle(tint)
-                    .scaleEffect(pressing && !reduceMotion ? 0.88 : 1)
-                    .animation(.spring(duration: 0.3, bounce: 0.3), value: pressing)
-            }
-            .frame(width: size, height: size)
-            .contentShape(Circle())
-            .onLongPressGesture(minimumDuration: seconds, maximumDistance: 60, perform: {
-                stopTicker(); Haptic.confirm()
-                progress = 0; pressing = false; action()
-            }, onPressingChanged: { down in
-                pressing = down
-                if down {
-                    Haptic.generic()
-                    withAnimation(.linear(duration: seconds)) { progress = 1 }
-                    ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in Haptic.tick() }
-                } else {
-                    stopTicker()
-                    withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
+        VStack(spacing: 10) {
+            Button(action: tap) {
+                ZStack {
+                    if armed, let confirm {
+                        Text(confirm).font(.system(size: max(12, size * 0.26), weight: .semibold)).foregroundStyle(.white)
+                            .frame(width: size * 1.7, height: size)
+                            .background(Capsule().fill(Color.red))
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    } else {
+                        ZStack {
+                            Color.clear.glass(Circle(), tint: tint.opacity(hover ? 0.28 : 0.18), interactive: true)
+                            Circle().strokeBorder(tint.opacity(0.25), lineWidth: size > 70 ? 3 : 2)
+                            Image(systemName: symbol).font(.system(size: size * 0.33, weight: .medium)).foregroundStyle(tint)
+                        }
+                        .frame(width: size, height: size)
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    }
                 }
-            })
-            if showTitle { Text(title).font(.callout).foregroundStyle(.secondary) }
+                .contentShape(armed ? AnyShape(Capsule()) : AnyShape(Circle()))
+            }
+            .buttonStyle(PressStyle())
+            .onHover { hover = $0 }
+            if showTitle { Text(armed ? "Click Stop to finish" : title).font(.callout).foregroundStyle(.secondary).contentTransition(.opacity) }
         }
+        .animation(.snappy(duration: 0.25), value: armed)
+        .help(armed ? "Click Stop to finish the recording" : title)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { action() }
+        .accessibilityAction { disarm?.cancel(); armed = false; action() }
     }
-
-    private func stopTicker() { ticker?.invalidate(); ticker = nil }
 }
 
 /// Voice-Memos-style live waveform.
@@ -714,7 +725,7 @@ struct PanelView: View {
             Picker("Mode", selection: $r.mode) { ForEach(Mode.allCases) { Text($0.rawValue).tag($0) } }
                 .pickerStyle(.segmented).labelsHidden()
             Text(r.mode.hint).font(.caption).foregroundStyle(.secondary)
-            HoldButton(title: "Hold to record", symbol: "mic.fill", tint: .red, seconds: 0.8) { r.start() }.padding(.vertical, 4)
+            RoundButton(title: "Record", symbol: "circle.fill", tint: .red) { r.start() }.padding(.vertical, 4)
             if r.lastDir != nil {
                 Button("Review last meeting") { r.reviewLast(); showWindow() }
                     .buttonStyle(.borderless).font(.callout)
@@ -754,7 +765,7 @@ struct PanelView: View {
                         .buttonStyle(.bordered).controlSize(.small).tint(k.tint).help("Flag this moment as \(k.label.lowercased()) (⌃⌥\(k.hotkey) from any app)")
                 }
             }
-            HoldButton(title: "Hold to stop", symbol: "stop.fill", tint: .primary, seconds: 1.5) { r.stop(); showWindow() }
+            RoundButton(title: "Stop recording", symbol: "stop.fill", tint: .primary, confirm: "Stop") { r.stop(); showWindow() }
         }
     }
 
@@ -856,9 +867,7 @@ struct MainWindow: View {
             }
         }
         .modifier(HideTitle())
-        .onChange(of: r.step) { _, _ in Haptic.generic() }
         .onChange(of: r.phase) { _, p in
-            if p == .done { Haptic.confirm() }
             if case .failed = p { NSSound.beep() }
         }
     }
@@ -901,7 +910,7 @@ struct StepRecord: View {
             case .recording:
                 Hero(symbol: "record.circle", tint: .red, title: "Recording", subtitle: "Use the menu bar icon to stop.")
             default:
-                Hero(symbol: "waveform.circle", tint: .secondary, title: "Ready when you are", subtitle: "Hold the record button in the menu bar to begin.")
+                Hero(symbol: "waveform.circle", tint: .secondary, title: "Ready when you are", subtitle: "Click record in the menu bar or the Meetings window to begin.")
             }
             Spacer()
         }.frame(maxWidth: .infinity)
@@ -927,7 +936,7 @@ struct StepReview: View {
                 HStack(spacing: 12) {
                     Button("Discard") { r.reset() }.glassButton()
                     Button { r.tidy() } label: {
-                        if r.tidying { ProgressView().controlSize(.small).frame(width: 70) } else { Label("Tidy up", systemImage: "sparkles") }
+                        if r.tidying { ProgressView().controlSize(.small).frame(width: 70) } else { Label("Tidy Up", systemImage: "wand.and.stars") }
                     }.glassButton().disabled(r.tidying).help("Fix spacing, punctuation and wording with the on-device model")
                     if r.canUndoTidy { Button("Undo tidy") { r.undoTidy() }.glassButton().transition(.scale.combined(with: .opacity)) }
                     Spacer(minLength: 8)
@@ -1067,6 +1076,7 @@ struct MinuteApp: App {
             .windowToolbarStyle(.unified)
             .defaultSize(width: 860, height: 760)
         .commands {
+            MeetingMenus()
             CommandGroup(replacing: .newItem) {
                 Button(r.isRecording ? "Stop Recording…" : "Start Recording…") { MinuteApp.confirmToggle(r) { openWindow(id: "minute"); NSApp.activate(ignoringOtherApps: true) } }
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(r.isBusy)

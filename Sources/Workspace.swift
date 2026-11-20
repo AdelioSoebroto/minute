@@ -78,7 +78,7 @@ final class MeetingEditor: ObservableObject {
         Task {
             let (code, tail) = await runMom(args) { s in Task { @MainActor in self.busy = s + "…" } }
             busy = nil
-            if code == 0 { load(); Haptic.confirm() } else { error = tail }
+            if code == 0 { load() } else { error = tail }
             then()
         }
     }
@@ -108,67 +108,108 @@ struct MeetingWorkspace: View {
 
     private var locked: Bool { editor.busy != nil || r.isBusy || r.isRecording }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            HStack(spacing: 0) {
-                GeometryReader { geo in
-                    let both = geo.size.width >= 940          // too narrow for both (e.g. with Claude open): show the minutes
-                    Group {
-                        if both && mode == 0 {
-                            HSplitView {
-                                transcriptPane.frame(minWidth: 340, idealWidth: 400)
-                                minutesPane.frame(minWidth: 600)
-                            }
-                        } else if mode == 2 { transcriptPane }
-                        else { minutesPane }
-                    }
-                    .onChange(of: both, initial: true) { _, b in narrow = !b }
-                }
-                if showAsk {
-                    Divider()
-                    AssistantPanel(editor: editor, close: { withAnimation(.spring(duration: 0.3)) { showAsk = false } }, changed: { lib.refresh() })
-                        .frame(width: 340).transition(.move(edge: .trailing))
-                }
-            }
-            Divider()
-            footer
-        }
-        .background {      // ⌘1 ⌘2 ⌘3 switch the view, like Finder
-            Group {
-                Button("") { mode = narrow ? 1 : 0 }.keyboardShortcut("1", modifiers: .command)
-                Button("") { mode = 1 }.keyboardShortcut("2", modifiers: .command)
-                Button("") { mode = 2 }.keyboardShortcut("3", modifiers: .command)
-            }.opacity(0).accessibilityHidden(true)
-        }
-        .onAppear { if editor.tLines.isEmpty && !editor.hasMinutes { editor.load() } }
-        .onDisappear { editor.save() }
-        .confirmationDialog("Write the minutes again?", isPresented: $confirmRegenerate) {
-            Button("Replace the minutes", role: .destructive) { editor.regenerate { lib.refresh() } }
-        } message: { Text("The minutes are rewritten from the transcript on the left. Edits you made to the minutes are replaced; your transcript corrections are used.") }
+    private var title: String { editor.agenda.isEmpty ? meeting.title : editor.agenda }
+    private var subtitle: String {
+        var s = "\(meeting.date.formatted(date: .complete, time: .shortened)) · \(meeting.status)"
+        if let t = editor.savedAt { s += " · Saved \(t.formatted(date: .omitted, time: .shortened))" }
+        return s
+    }
+    private var canAsk: Bool { !(editor.tLines.isEmpty && !editor.hasMinutes) }
+
+    private func open(_ ext: String) { if let f = exportedFile(in: meeting.dir, ext: ext) { NSWorkspace.shared.open(f) } }
+    private func toggleClaude() { withAnimation(.snappy) { showAsk.toggle() } }
+
+    /// What the menu bar's File, View and Meeting menus act on while this meeting is in front.
+    private var commands: MeetingCommands {
+        MeetingCommands(view: narrow && mode == 0 ? 1 : mode, narrow: narrow, claudeShown: showAsk, canAsk: canAsk,
+                        hasMinutes: editor.hasMinutes, hasTranscript: !editor.tLines.isEmpty, locked: locked,
+                        hasDocx: meeting.hasDocx, hasPdf: meeting.hasPdf,
+                        setView: { mode = $0 }, toggleClaude: toggleClaude,
+                        export: { editor.exportAll { lib.refresh() } }, tidy: { editor.tidy { lib.refresh() } },
+                        rewrite: { confirmRegenerate = true }, openFile: open,
+                        finder: { NSWorkspace.shared.activateFileViewerSelecting([meeting.dir]) }, trash: delete)
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(editor.agenda.isEmpty ? meeting.title : editor.agenda).font(.title2.weight(.semibold)).lineLimit(2)
-                HStack(spacing: 6) {
-                    Text("\(meeting.date.formatted(date: .complete, time: .shortened)) · \(meeting.status)")
-                    if let t = editor.savedAt { Text("· Saved \(t.formatted(date: .omitted, time: .shortened))").foregroundStyle(.tertiary) }
-                }.font(.callout).foregroundStyle(.secondary)
+    var body: some View {
+        GeometryReader { geo in
+            let both = geo.size.width >= 940          // too narrow for both (e.g. with Claude open): show one at a time
+            Group {
+                if both && mode == 0 {
+                    HSplitView {
+                        transcriptPane.frame(minWidth: 340, idealWidth: 400)
+                        minutesPane.frame(minWidth: 520)
+                    }
+                } else if mode == 2 { transcriptPane }
+                else { minutesPane }
             }
-            Spacer()
-            Button { withAnimation(.spring(duration: 0.3)) { showAsk.toggle() } } label: { Label("Claude", systemImage: "sparkles") }
-                .glassButton(prominent: showAsk).disabled(editor.tLines.isEmpty && !editor.hasMinutes)
-                .keyboardShortcut("k", modifiers: .command)
-                .help("Tell Claude what the minutes missed, or ask about the meeting (⌘K)")
+            .onChange(of: both, initial: true) { _, b in narrow = !b }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { statusBanner }
+        .navigationTitle(title)
+        .navigationSubtitle(subtitle)
+        .toolbar { toolbar }
+        .inspector(isPresented: $showAsk) {
+            AssistantPanel(editor: editor, close: toggleClaude, changed: { lib.refresh() })
+                .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
+        }
+        .focusedSceneValue(\.meeting, commands)
+        .onAppear { if editor.tLines.isEmpty && !editor.hasMinutes { editor.load() } }
+        .onDisappear { editor.save() }
+        .confirmationDialog("Rewrite the minutes from the transcript?", isPresented: $confirmRegenerate) {
+            Button("Rewrite Minutes", role: .destructive) { editor.regenerate { lib.refresh() } }
+        } message: { Text("Edits you made to the minutes are replaced. Your transcript corrections are used.") }
+    }
+
+    /// Progress and errors sit under the toolbar, like Mail's activity line, instead of in a custom button bar.
+    @ViewBuilder private var statusBanner: some View {
+        if let b = editor.busy {
+            HStack(spacing: 8) { ProgressView().controlSize(.small); Text(b).font(.callout).foregroundStyle(.secondary); Spacer() }
+                .padding(.horizontal, 16).padding(.vertical, 7).background(.bar)
+        } else if let e = editor.error {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(e).font(.callout).lineLimit(2).textSelection(.enabled)
+                Spacer()
+                Button("Dismiss") { editor.error = nil }.controlSize(.small)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 7).background(.bar)
+        }
+    }
+
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
             Picker("View", selection: Binding(get: { narrow && mode == 0 ? 1 : mode }, set: { mode = $0 })) {
-                if !narrow { Text("Both").tag(0) }
-                Text("Minutes").tag(1); Text("Transcript").tag(2)
-            }.pickerStyle(.segmented).labelsHidden().frame(width: narrow ? 170 : 230)
-            .help(narrow ? "Widen the window to see the transcript and minutes side by side" : "")
-        }.padding(.horizontal, 24).padding(.vertical, 12)
+                if !narrow { Label("Transcript and Minutes", systemImage: "rectangle.split.2x1").tag(0) }
+                Label("Minutes", systemImage: "doc.text").tag(1)
+                Label("Transcript", systemImage: "text.bubble").tag(2)
+            }
+            .pickerStyle(.segmented).labelStyle(.iconOnly)
+            .help(narrow ? "Widen the window to see the transcript and minutes side by side" : "Choose what to show (⌘1, ⌘2, ⌘3)")
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            if editor.hasMinutes { shareMenu }
+            Menu {
+                if editor.hasMinutes {
+                    Button { editor.tidy { lib.refresh() } } label: { Label("Tidy Up Wording", systemImage: "wand.and.stars") }.disabled(locked)
+                }
+                if editor.hasMinutes && !editor.tLines.isEmpty {
+                    Button { confirmRegenerate = true } label: { Label("Rewrite Minutes…", systemImage: "arrow.triangle.2.circlepath") }.disabled(locked)
+                }
+                Divider()
+                if meeting.hasDocx { Button { open("docx") } label: { Label("Open in Word", systemImage: "doc.text") } }
+                if meeting.hasPdf { Button { open("pdf") } label: { Label("Open PDF", systemImage: "doc.richtext") } }
+                Button { NSWorkspace.shared.activateFileViewerSelecting([meeting.dir]) } label: { Label("Show in Finder", systemImage: "folder") }
+                Divider()
+                Button(role: .destructive, action: delete) { Label("Move to Bin…", systemImage: "trash") }
+            } label: { Label("More", systemImage: "ellipsis.circle") }
+            .help("More actions")
+            if editor.hasMinutes {
+                Button { editor.exportAll { lib.refresh() } } label: { Label(meeting.hasPdf ? "Export Again" : "Export", systemImage: "arrow.up.doc") }
+                    .disabled(locked).help("Make the Word document and PDF (⌘E)")
+            }
+            Button(action: toggleClaude) { Label("Claude", systemImage: "sparkles") }
+                .disabled(!canAsk).help(showAsk ? "Hide Claude (⌘K)" : "Ask Claude about this meeting, or tell it what the minutes missed (⌘K)")
+        }
     }
 
     private var transcriptPane: some View {
@@ -186,7 +227,8 @@ struct MeetingWorkspace: View {
         if editor.hasMinutes {
             PaperDesk {
                 MinutesPaper(agenda: $editor.agenda, date: $editor.date, time: $editor.time, telkNames: $editor.telkNames, telkUnit: $editor.telkUnit,
-                             tpNames: $editor.tpNames, tpCompany: $editor.tpCompany, topics: $editor.topics, editable: true)
+                             tpNames: $editor.tpNames, tpCompany: $editor.tpCompany, topics: $editor.topics, editable: true,
+                             onJump: editor.tLines.isEmpty ? nil : { showWhere($0) })
             }
         } else {
             VStack(spacing: 12) {
@@ -203,36 +245,9 @@ struct MeetingWorkspace: View {
         }
     }
 
-    private var footer: some View {
-        GlassGroup(spacing: 12) {
-            HStack(spacing: 10) {
-                if meeting.hasDocx { Button { if let f = exportedFile(in: meeting.dir, ext: "docx") { NSWorkspace.shared.open(f) } } label: { Label("Word", systemImage: "doc.text") }.glassButton() }
-                if meeting.hasPdf { Button { if let f = exportedFile(in: meeting.dir, ext: "pdf") { NSWorkspace.shared.open(f) } } label: { Label("PDF", systemImage: "doc.richtext") }.glassButton() }
-                Button { NSWorkspace.shared.activateFileViewerSelecting([meeting.dir]) } label: { Label("Finder", systemImage: "folder") }.glassButton()
-                Button(role: .destructive, action: delete) { Label("Delete", systemImage: "trash") }.glassButton()
-                if let b = editor.busy { ProgressView().controlSize(.small); Text(b).font(.callout).foregroundStyle(.secondary) }
-                else if let e = editor.error { Text(e).font(.caption).foregroundStyle(.red).lineLimit(2) }
-                Spacer()
-                if editor.hasMinutes { shareMenu }
-                if editor.hasMinutes {
-                    Button { editor.tidy { lib.refresh() } } label: { Label("Tidy up", systemImage: "sparkles") }.glassButton().disabled(locked)
-                        .help("Fix spacing, punctuation and wording with the on-device model")
-                }
-                if !editor.tLines.isEmpty && editor.hasMinutes {
-                    Button { confirmRegenerate = true } label: { Label("Rewrite minutes", systemImage: "arrow.triangle.2.circlepath") }.glassButton().disabled(locked)
-                        .help("Write the minutes again from the (corrected) transcript")
-                }
-                if editor.hasMinutes {
-                    Button { editor.exportAll { lib.refresh() } } label: { Text(meeting.hasPdf ? "Export again" : "Export Word & PDF").frame(minWidth: 120) }
-                        .glassButton(prominent: true).disabled(locked).keyboardShortcut("e", modifiers: .command).help("Export Word and PDF (⌘E)")
-                }
-            }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12)
-        }
-    }
-
     private func showWhere(_ text: String) {
         guard let i = TLine.bestMatch(for: text, in: editor.tLines) else { flashNotice("Couldn't find where this was said"); return }
-        if mode == 1 { mode = 2 }
+        if mode == 1 || (narrow && mode == 0) { mode = 2 }
         jump = JumpRequest(id: editor.tLines[i].id)
     }
 
@@ -249,7 +264,7 @@ struct MeetingWorkspace: View {
     }
 
     private func copy(_ s: String, _ msg: String) {
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string); Haptic.confirm(); flashNotice(msg)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string); flashNotice(msg)
     }
 
     private func saveFile(_ name: String, _ text: String) {
@@ -275,7 +290,50 @@ struct MeetingWorkspace: View {
                 NSSharingService(named: .composeEmail)?.perform(withItems: items)
             }
         } label: { Label(notice ?? "Share", systemImage: notice == nil ? "square.and.arrow.up" : "checkmark") }
-            .menuStyle(.button).fixedSize()
+            .help(notice ?? "Copy, save or email the minutes")
     }
 
+}
+
+
+/// The actions of the meeting in front, for the menu bar (File > Export, View, Meeting).
+struct MeetingCommands {
+    var view: Int; var narrow: Bool; var claudeShown: Bool; var canAsk: Bool
+    var hasMinutes: Bool; var hasTranscript: Bool; var locked: Bool; var hasDocx: Bool; var hasPdf: Bool
+    var setView: (Int) -> Void; var toggleClaude: () -> Void
+    var export: () -> Void; var tidy: () -> Void; var rewrite: () -> Void; var openFile: (String) -> Void
+    var finder: () -> Void; var trash: () -> Void
+}
+
+struct MeetingCommandsKey: FocusedValueKey { typealias Value = MeetingCommands }
+extension FocusedValues {
+    var meeting: MeetingCommands? { get { self[MeetingCommandsKey.self] } set { self[MeetingCommandsKey.self] = newValue } }
+}
+
+struct MeetingMenus: Commands {
+    @FocusedValue(\.meeting) private var m
+
+    var body: some Commands {
+        CommandGroup(replacing: .importExport) {
+            Button("Export Word & PDF") { m?.export() }.keyboardShortcut("e").disabled(m?.hasMinutes != true || m?.locked == true)
+        }
+        CommandGroup(before: .toolbar) {
+            Button("Transcript and Minutes") { m?.setView(0) }.keyboardShortcut("1").disabled(m == nil || m?.narrow == true)
+            Button("Minutes") { m?.setView(1) }.keyboardShortcut("2").disabled(m == nil)
+            Button("Transcript") { m?.setView(2) }.keyboardShortcut("3").disabled(m == nil)
+            Divider()
+            Button(m?.claudeShown == true ? "Hide Claude" : "Show Claude") { m?.toggleClaude() }.keyboardShortcut("k").disabled(m?.canAsk != true)
+            Divider()
+        }
+        CommandMenu("Meeting") {
+            Button("Tidy Up Wording") { m?.tidy() }.disabled(m?.hasMinutes != true || m?.locked == true)
+            Button("Rewrite Minutes…") { m?.rewrite() }.disabled(m?.hasMinutes != true || m?.hasTranscript != true || m?.locked == true)
+            Divider()
+            Button("Open in Word") { m?.openFile("docx") }.disabled(m?.hasDocx != true)
+            Button("Open PDF") { m?.openFile("pdf") }.disabled(m?.hasPdf != true)
+            Button("Show in Finder") { m?.finder() }.keyboardShortcut("r", modifiers: [.command, .option]).disabled(m == nil)
+            Divider()
+            Button("Move to Bin…") { m?.trash() }.keyboardShortcut(.delete, modifiers: .command).disabled(m == nil)
+        }
+    }
 }

@@ -6,6 +6,7 @@ the current version's notes once after an update (Help > What's New). Format fol
 ## [1.2.0] - 2026-10-24
 
 ### New
+- **Claude beside every meeting**: open the Claude panel on a past meeting and say what the minutes missed or got wrong ("Pak Aji owns the VA check, due Friday"); it updates the topics and action items, keeps every topic you did not ask to change, and Undo puts the last change back. You can also ask questions about the meeting. Uses Claude Sonnet when Claude is the engine.
 - **Claude API as the writing engine** (Settings > AI engine, optional). Minutes, fact-checks, name fixes, tidy-ups and "Ask" can use Claude (Opus 5.5, Sonnet 5.5 or Haiku 5.5) instead of the model on this Mac, so a small or busy Mac doesn't have to run one. The key is kept in the Keychain, "Test Connection" checks it, and if Claude can't be reached Minute falls back to the model on this Mac when there is one. Speech recognition and audio stay on this Mac.
 - **"My Claude login" option**: use the Claude Code already signed in on your Mac (your own Claude plan) instead of an API key, so there is no separate bill; meetings count against the plan's usage limits.
 

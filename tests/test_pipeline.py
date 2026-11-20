@@ -337,6 +337,44 @@ class EngineFallback(unittest.TestCase):
         m.resolve_provider(); self.assertEqual(m.CFG["llm_provider"], "anthropic")
 
 
+class Assistant(unittest.TestCase):
+    """The in-app assistant: a correction updates the minutes and action items (with a snapshot), a question changes nothing."""
+    def setUp(self):
+        import tempfile
+        self.saved = (m.chat, m.ensure_ollama, dict(m.CFG)); m.ensure_ollama = lambda: None
+        self.d = Path(tempfile.mkdtemp()) / "2026-11-20_0918_x"; self.d.mkdir(parents=True)
+        (self.d / "transcript.md").write_text("# Transcript\n\n[00:01:00] Speaker: VA diperpanjang jadi 7 hari.\n")
+        (self.d / "MoM.json").write_text(json.dumps({"agenda": "A", "date": "d", "time": "t", "telkomsel_names": ["Adelio"], "telkomsel_unit": "", "third_party_names": [], "third_party_company": "", "topics": ["VA diperpanjang."]}))
+        (self.d / "analysis.json").write_text(json.dumps({"summary": "", "action_items": [{"task": "Cek config VA", "owner": "Unassigned", "due": "TBD"}]}))
+    def tearDown(self): m.chat, m.ensure_ollama = self.saved[0], self.saved[1]; m.CFG.clear(); m.CFG.update(self.saved[2])
+    def answer(self, obj): m.chat = lambda system, user, schema=None, **k: (self.__dict__.setdefault("prompts", []).append(user) or json.dumps(obj))
+    def test_correction_updates_minutes_owner_and_keeps_a_snapshot(self):
+        self.answer({"reply": "Pemilik diisi Pak Aji.", "changed": True,
+                     "minutes": {"agenda": "A", "telkomsel_names": ["Adelio", "Pak Aji"], "telkomsel_unit": "", "third_party_names": [], "third_party_company": "", "topics": ["VA diperpanjang oleh Pak Aji."]},
+                     "action_items": [{"task": "Cek config VA", "owner": "Pak Aji", "due": "TBD"}]})
+        m.assist(self.d, "Pak Aji yang pegang VA")
+        mom = json.loads((self.d / "MoM.json").read_text()); an = json.loads((self.d / "analysis.json").read_text())
+        self.assertIn("Pak Aji", mom["topics"][0]); self.assertEqual(mom["date"], "d")
+        self.assertEqual(an["action_items"][0]["owner"], "Pak Aji")
+        self.assertTrue((self.d / "MoM.previous.json").exists() and (self.d / "analysis.previous.json").exists())
+        h = json.loads((self.d / "assistant.json").read_text()); self.assertEqual([x["role"] for x in h], ["user", "assistant"]); self.assertTrue(h[1]["changed"])
+    def test_question_changes_nothing_and_history_is_sent_next_time(self):
+        before = (self.d / "MoM.json").read_text()
+        self.answer({"reply": "Di menit 1.", "changed": False, "minutes": {"topics": []}, "action_items": []})
+        m.assist(self.d, "kapan VA dibahas?"); m.assist(self.d, "lalu?")
+        self.assertEqual((self.d / "MoM.json").read_text(), before); self.assertFalse((self.d / "MoM.previous.json").exists())
+        self.assertIn("kapan VA dibahas?", self.prompts[1])
+    def test_never_drops_a_topic_it_was_not_asked_to_remove(self):
+        (self.d / "MoM.json").write_text(json.dumps({"agenda": "A", "topics": ["satu", "dua"]}))
+        self.answer({"reply": "ok", "changed": True, "minutes": {"agenda": "A", "telkomsel_names": [], "telkomsel_unit": "", "third_party_names": [], "third_party_company": "", "topics": ["satu"]}, "action_items": []})
+        m.assist(self.d, "pemiliknya Budi"); self.assertEqual(len(self.prompts), 2)
+        self.assertEqual(json.loads((self.d / "MoM.json").read_text())["topics"], ["satu", "dua"])
+    def test_uses_sonnet_when_claude_is_the_engine(self):
+        m.CFG.update({"llm_provider": "claudecode", "claude_model": "claude-opus-5-5"})
+        self.answer({"reply": "ok", "changed": False, "minutes": {"topics": []}, "action_items": []})
+        m.assist(self.d, "hi"); self.assertEqual(m.CFG["claude_model"], "claude-sonnet-5-5")
+
+
 class RunDecoding(unittest.TestCase):
     def test_run_survives_invalid_utf8_output(self):
         r = m.run(["/usr/bin/python3", "-c", "import sys; sys.stdout.buffer.write(b'ok \\xaf done')"])

@@ -96,9 +96,6 @@ struct MeetingWorkspace: View {
     @StateObject private var editor: MeetingEditor
     @State private var mode = 0            // 0 both, 1 minutes, 2 transcript
     @State private var confirmRegenerate = false
-    @State private var question = ""
-    @State private var answer = ""
-    @State private var asking = false
     @State private var showAsk = false
     @State private var jump: JumpRequest?
     @State private var notice: String?
@@ -114,18 +111,24 @@ struct MeetingWorkspace: View {
         VStack(spacing: 0) {
             header
             Divider()
-            GeometryReader { geo in
-                let both = geo.size.width >= 940
-                Group {
-                    if both && mode == 0 {
-                        HSplitView {
-                            transcriptPane.frame(minWidth: 340, idealWidth: 400)
-                            minutesPane.frame(minWidth: 600)
-                        }
-                    } else if mode == 2 { transcriptPane }
-                    else { minutesPane }
+            HStack(spacing: 0) {
+                GeometryReader { geo in
+                    let both = geo.size.width >= 940          // too narrow for both (e.g. with Claude open): show the minutes
+                    Group {
+                        if both && mode == 0 {
+                            HSplitView {
+                                transcriptPane.frame(minWidth: 340, idealWidth: 400)
+                                minutesPane.frame(minWidth: 600)
+                            }
+                        } else if mode == 2 { transcriptPane }
+                        else { minutesPane }
+                    }
                 }
-                .onChange(of: both) { _, b in if !b && mode == 0 { mode = 1 } }
+                if showAsk {
+                    Divider()
+                    AssistantPanel(editor: editor, close: { withAnimation(.spring(duration: 0.3)) { showAsk = false } }, changed: { lib.refresh() })
+                        .frame(width: 340).transition(.move(edge: .trailing))
+                }
             }
             Divider()
             footer
@@ -147,6 +150,9 @@ struct MeetingWorkspace: View {
                 }.font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
+            Button { withAnimation(.spring(duration: 0.3)) { showAsk.toggle() } } label: { Label("Claude", systemImage: "sparkles") }
+                .glassButton(prominent: showAsk).disabled(editor.tLines.isEmpty && !editor.hasMinutes)
+                .help("Tell Claude what the minutes missed, or ask about the meeting")
             Picker("", selection: $mode) {
                 Text("Both").tag(0); Text("Minutes").tag(1); Text("Transcript").tag(2)
             }.pickerStyle(.segmented).labelsHidden().frame(width: 230)
@@ -158,12 +164,8 @@ struct MeetingWorkspace: View {
             HStack {
                 Label("Transcript", systemImage: "text.alignleft").font(.callout.weight(.semibold))
                 Spacer()
-                Button { withAnimation(.spring(duration: 0.3)) { showAsk.toggle() } } label: { Label("Ask", systemImage: "sparkles") }
-                    .buttonStyle(.borderless).foregroundStyle(showAsk ? Color.accentColor : .secondary)
-                    .disabled(editor.tLines.isEmpty).help("Ask a question about this meeting")
             }.padding(.horizontal, 16).padding(.top, 10)
             TranscriptPane(lines: $editor.tLines, dir: meeting.dir, events: editor.screenEvents, marks: editor.marks, jump: jump)
-            if showAsk { askBar }
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
@@ -264,28 +266,4 @@ struct MeetingWorkspace: View {
             .menuStyle(.button).fixedSize()
     }
 
-    private var askBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !answer.isEmpty || asking {
-                Group { if asking { HStack { ProgressView().controlSize(.small); Text("Thinking…").foregroundStyle(.secondary) } } else { Text(answer).textSelection(.enabled) } }
-                    .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .glass(RoundedRectangle(cornerRadius: 16))
-            }
-            HStack {
-                Image(systemName: "sparkles").foregroundStyle(.secondary)
-                TextField("Ask about this meeting…", text: $question).textFieldStyle(.plain).onSubmit { ask() }
-                if !question.isEmpty { Button { ask() } label: { Image(systemName: "arrow.up.circle.fill") }.buttonStyle(.borderless).disabled(asking).accessibilityLabel("Ask") }
-            }.padding(.horizontal, 14).padding(.vertical, 10).glass(Capsule(), interactive: true)
-        }.padding(.horizontal, 14).padding(.vertical, 10)
-    }
-
-    private func ask() {
-        let q = question.trimmingCharacters(in: .whitespaces); guard !q.isEmpty, !asking else { return }
-        editor.save(); asking = true; answer = ""
-        Task {
-            let (code, out) = await runMom(["--ask", meeting.dir.path, q], full: true)
-            answer = code == 0 ? out : "Couldn't answer: \(out)"
-            asking = false
-        }
-    }
 }

@@ -1415,6 +1415,52 @@ def tidy(d: Path):
     write_atomic(f, json.dumps(data, ensure_ascii=False, indent=2))
     print("DONE", d, flush=True)
 
+ASSIST_SCHEMA = {"type": "object", "properties": {
+    "reply": {"type": "string"},
+    "changed": {"type": "boolean"},
+    "minutes": SCHEMA,
+    "action_items": ANALYSIS_SCHEMA["properties"]["action_items"]}}
+
+ASSIST_SYSTEM = """You are the assistant inside Minute, a minutes-of-meeting app. The user attended this meeting and is reviewing the minutes you see below against the transcript.
+They will point out what is missing or wrong, give names, owners or dates, ask you to rewrite something, or ask questions about the meeting.
+- When they point something out or ask for a change: update the minutes. Keep every topic that is still right, word for word; change, add or remove only what they asked for or what their correction implies.
+  Keep the template's style: formal, third person, one item per distinct point, same language as the existing topics. Trust what the user says about the meeting (they were there) even if the transcript is unclear; if the transcript contradicts them, apply it anyway and say so briefly.
+  Also update the action items (task, owner, due) when owners, tasks or dates are affected. Set changed to true and return the full updated minutes and the full action item list.
+- When they only ask a question: answer it from the transcript and minutes (quote [hh:mm:ss] times where useful), set changed to false, and return the minutes and action items unchanged.
+- reply: one to three short sentences in the user's language saying what you changed or answering the question. Never invent facts that neither the user nor the transcript gave."""
+
+def assist(d: Path, message: str):
+    """Minute's built-in assistant: always the faster Claude model (Sonnet) when Claude is the engine."""
+    if use_claude(): CFG["claude_model"] = "claude-sonnet-5-5"
+    ensure_ollama()
+    tr = (d / "transcript.md").read_text() if (d / "transcript.md").exists() else ""
+    mom = load_json(d / "MoM.json", {}); an = load_json(d / "analysis.json", {})
+    hist = load_json(d / "assistant.json", [])
+    convo = "\n".join(f"{h.get('role', 'user').upper()}: {h.get('text', '')}" for h in hist[-12:])
+    user = (f"TRANSCRIPT:\n{tr[:120000]}\n\nCURRENT MINUTES:\n{json.dumps(mom, ensure_ascii=False)}\n\nCURRENT ACTION ITEMS:\n{json.dumps(an.get('action_items', []), ensure_ascii=False)}"
+            + (f"\n\nCONVERSATION SO FAR:\n{convo}" if convo else "") + f"\n\nUSER: {message}")
+    stage("Thinking")
+    out = json.loads(chat(ASSIST_SYSTEM, user, ASSIST_SCHEMA))
+    old_n = len([t for t in mom.get("topics", []) if str(t).strip()])
+    new_n = len([t for t in (out.get("minutes") or {}).get("topics", []) if str(t).strip()])
+    asked_to_remove = re.search(r"hapus|buang|hilangkan|gabung|remove|delete|drop|merge|combine|shorten|ringkas|singkat", message, re.I)
+    if out.get("changed") and new_n < old_n and not asked_to_remove:      # never lose a topic the user did not ask to remove
+        log(f"assistant dropped topics ({old_n} -> {new_n}) without being asked: asking again")
+        out = json.loads(chat(ASSIST_SYSTEM, user + f"\n\nNOTE: your previous answer returned {new_n} topics but the minutes have {old_n} and the user did not ask to remove any. Return every existing topic.", ASSIST_SCHEMA))
+        if len([t for t in (out.get("minutes") or {}).get("topics", []) if str(t).strip()]) < old_n: out["changed"] = False; out["reply"] = (out.get("reply", "") + " (Not applied: it would have removed topics.)").strip()
+    changed = bool(out.get("changed")) and bool([t for t in (out.get("minutes") or {}).get("topics", []) if str(t).strip()])
+    if changed:
+        new = {**mom, **{k: v for k, v in out["minutes"].items() if k in SCHEMA["properties"]}}
+        snapshot_minutes(d)
+        if (d / "analysis.json").exists(): write_atomic(d / "analysis.previous.json", (d / "analysis.json").read_text())
+        write_atomic(d / "MoM.json", json.dumps(new, ensure_ascii=False, indent=2))
+        if isinstance(out.get("action_items"), list):
+            an["action_items"] = out["action_items"]; write_atomic(d / "analysis.json", json.dumps(an, ensure_ascii=False, indent=2))
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    hist += [{"role": "user", "text": message, "t": now}, {"role": "assistant", "text": out.get("reply", ""), "changed": changed, "t": now}]
+    write_atomic(d / "assistant.json", json.dumps(hist[-60:], ensure_ascii=False, indent=2))
+    print("ASSIST " + json.dumps({"reply": out.get("reply", ""), "changed": changed}, ensure_ascii=False), flush=True)
+
 def ask(d: Path, question: str):
     tr = (d / "transcript.md").read_text() if (d / "transcript.md").exists() else ""
     if not tr: raise SystemExit("This meeting has no transcript yet.")
@@ -1465,6 +1511,8 @@ def main():
     (HOME / ".mom").mkdir(parents=True, exist_ok=True)
     LIGHT = {"--doctor", "--hardware", "--diagnostics", "--get-whisper", "--install-tools", "--install-docx", "--pull-model", "--test-pdf", "--make-template"}
     _lock = None if args and args[0] in LIGHT else single_run()      # quick checks and installs never wait behind a long job
+    if args and args[0] == "--assist":
+        return assist(Path(args[1]).expanduser().resolve(), " ".join(args[2:]))
     if args and args[0] == "--ask":
         return ask(Path(args[1]).expanduser().resolve(), " ".join(args[2:]))
     if not args: raise SystemExit(__doc__)
